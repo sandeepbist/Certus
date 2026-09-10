@@ -28,6 +28,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.notifications import router as notifications_router
 from app.api.search import router as search_router
 from app.api.webhooks import router as webhooks_router
+from app.api.embedding_generations import router as embedding_generations_router
 from app.core.db import DatabasePoolTimeout, close_db_pool, get_db_cursor
 from app.core.runtime import close_runtime_resources
 from app.retrieval.graphrag import close_graph_driver
@@ -154,6 +155,7 @@ app.include_router(dashboard_router)
 app.include_router(notifications_router)
 app.include_router(search_router)
 app.include_router(webhooks_router)
+app.include_router(embedding_generations_router)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8002))

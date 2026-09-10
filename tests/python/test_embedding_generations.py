@@ -6,7 +6,7 @@ from evals.embedding_generations import check_embedding_generation_report
 class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_complete_report_passes(self):
         report = {
-            "schema": {"latest_migration": "058_embedding_generation_worker_dispatch.sql"},
+            "schema": {"latest_migration": "059_embedding_generation_operator_api.sql"},
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
@@ -63,7 +63,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
 
     def test_empty_database_may_skip_only_the_nonempty_probe(self):
         report = {
-            "schema": {"latest_migration": "058_embedding_generation_worker_dispatch.sql"},
+            "schema": {"latest_migration": "059_embedding_generation_operator_api.sql"},
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],

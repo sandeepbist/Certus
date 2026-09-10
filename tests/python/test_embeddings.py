@@ -60,6 +60,9 @@ class EmbeddingProfileTests(unittest.TestCase):
         worker_dispatch = Path(
             "infra/db/migrations/058_embedding_generation_worker_dispatch.sql"
         ).read_text(encoding="utf-8")
+        operator_api = Path(
+            "infra/db/migrations/059_embedding_generation_operator_api.sql"
+        ).read_text(encoding="utf-8")
 
         for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
             literal = serving_embedding_profile_sql_literal(identifier)
@@ -96,6 +99,8 @@ class EmbeddingProfileTests(unittest.TestCase):
             worker_dispatch,
         )
         self.assertIn("WHERE status = 'building'", worker_dispatch)
+        self.assertIn("evaluation_size_check", operator_api)
+        self.assertIn("status_history", operator_api)
 
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):

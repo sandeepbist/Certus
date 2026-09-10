@@ -21,6 +21,7 @@ import { dashboardRoutes } from './routes/dashboard.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { searchRoutes } from './routes/search.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { embeddingGenerationRoutes } from './routes/embeddingGenerations.js';
 import { handleWebSocketConnection } from './websocket/streamHandler.js';
 import { NotificationBroker } from './websocket/notificationBroker.js';
 import { handleNotificationConnection } from './websocket/notificationHandler.js';
@@ -106,6 +107,7 @@ export async function buildServer() {
   await app.register(notificationRoutes);
   await app.register(searchRoutes);
   await app.register(webhookRoutes);
+  await app.register(embeddingGenerationRoutes);
 
   // WebSocket Streaming Route
   app.register(async (fastifyInstance) => {
