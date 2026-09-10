@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Sequence
 
+from services.shared.embeddings import serving_embedding_profile_sql_literal
+
 
 DEFAULT_SEMANTIC_CANDIDATE_LIMIT = 20
 MAX_SEMANTIC_CANDIDATE_LIMIT = 100
@@ -425,6 +427,9 @@ def build_document_semantic_query(
     normalized_time_start, normalized_time_end = _normalize_time_bounds(
         time_start, time_end
     )
+    embedding_profile_literal = serving_embedding_profile_sql_literal(
+        embedding_profile
+    )
     if version_scope == "as_of" and (
         normalized_year_start is not None
         or normalized_year_end is not None
@@ -498,7 +503,7 @@ def build_document_semantic_query(
               AND version.status = 'ready'
               AND c.derivation_id = version.current_derivation_id
               AND c.embedding IS NOT NULL
-              AND c.embedding_profile = %s
+              AND c.embedding_profile = {embedding_profile_literal}
             ORDER BY c.embedding <=> %s::vector ASC
             LIMIT %s
         )
@@ -531,7 +536,6 @@ def build_document_semantic_query(
             normalized_time_end,
             version_scope,
         ),
-        embedding_profile,
         vector_literal,
         candidate_limit,
         1.0 - minimum_similarity,

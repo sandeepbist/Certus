@@ -85,6 +85,35 @@ LEGACY_EMBEDDING_PROFILE = EmbeddingProfile(
     provider="legacy",
     model="unversioned",
 )
+_SERVING_EMBEDDING_PROFILE_SQL_LITERALS = {
+    LOCAL_EMBEDDING_PROFILE.identifier: (
+        "'embedding-space:v1:local:local-lexical-v2:1536'"
+    ),
+    "embedding-space:v1:openai:text-embedding-3-small:1536": (
+        "'embedding-space:v1:openai:text-embedding-3-small:1536'"
+    ),
+    "embedding-space:v1:openai:text-embedding-3-large:1536": (
+        "'embedding-space:v1:openai:text-embedding-3-large:1536'"
+    ),
+}
+SUPPORTED_SERVING_EMBEDDING_PROFILES = frozenset(
+    _SERVING_EMBEDDING_PROFILE_SQL_LITERALS
+)
+
+
+def serving_embedding_profile_sql_literal(identifier: str) -> str:
+    """Return only a fixed SQL literal backed by a dedicated ANN graph.
+
+    PostgreSQL cannot prove that a parameter implies a partial-index predicate
+    at plan time. Keeping this as a closed mapping makes the predicate visible
+    to the planner without interpolating caller-controlled text.
+    """
+    try:
+        return _SERVING_EMBEDDING_PROFILE_SQL_LITERALS[identifier]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            "Embedding profile has no isolated serving index"
+        ) from error
 
 
 def has_usable_openai_api_key(api_key: str) -> bool:

@@ -3,7 +3,7 @@
   "dataset_id": "certus-seed",
   "dataset_version": "1.1.0",
   "manifest_sha256": "857b8e395d075001ab38f47b5ad59d7c40b8928eeafbfbbaa2a6b183026f62ee",
-  "run_fingerprint": "e6133b67f1637b9e2f8d02126d483cabdc6360dca27147c6e884ef9727e8b79f",
+  "run_fingerprint": "d86679311c81fdeac000a162b693fb069513aa97f69b8fb7f9a1d3eb80378102",
   "known_gaps": [
     "The seed hybrid returns candidates for the no-answer budget query, so no_answer_empty_rate is currently 0.0; claim-level abstention remains a P0 gap.",
     "The offline lexical arm is deterministic token overlap, not the PostgreSQL FTS execution path.",

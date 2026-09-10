@@ -8,6 +8,7 @@ from psycopg2.extras import RealDictCursor
 from app.core.db import get_db_connection
 from app.core.runtime import RETRIEVAL_STATEMENT_TIMEOUT_MS
 from app.retrieval.hybrid import EmbeddingResult, embed_query
+from services.shared.embeddings import serving_embedding_profile_sql_literal
 
 
 logger = logging.getLogger("orchestration_memory_retrieval")
@@ -54,6 +55,9 @@ def retrieve_relevant_memories(
         if resolved_embedding is None:
             return []
         vector = f"[{','.join(str(value) for value in resolved_embedding.vector)}]"
+        embedding_profile_literal = serving_embedding_profile_sql_literal(
+            resolved_embedding.profile.identifier
+        )
         with get_db_connection() as connection:
             with connection.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute(
@@ -61,7 +65,7 @@ def retrieve_relevant_memories(
                     (f"{RETRIEVAL_STATEMENT_TIMEOUT_MS}ms",),
                 )
                 cursor.execute(
-                    """
+                    f"""
                     SELECT id, fact, category, confidence,
                            1.0 - (embedding <=> %s::vector) AS similarity
                     FROM memories
@@ -69,7 +73,7 @@ def retrieve_relevant_memories(
                       AND user_id = %s
                       AND is_active = true
                       AND embedding IS NOT NULL
-                      AND embedding_profile = %s
+                      AND embedding_profile = {embedding_profile_literal}
                       AND 1.0 - (embedding <=> %s::vector) >= %s
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
@@ -78,7 +82,6 @@ def retrieve_relevant_memories(
                         vector,
                         tenant_id,
                         user_id,
-                        resolved_embedding.profile.identifier,
                         vector,
                         MIN_MEMORY_SIMILARITY,
                         vector,

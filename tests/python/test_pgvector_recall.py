@@ -5,6 +5,7 @@ from services.shared.document_retrieval import (
     build_document_lexical_queries,
     build_document_semantic_query,
 )
+from services.shared.embeddings import LOCAL_EMBEDDING_PROFILE
 from evals.pgvector_recall import (
     check_pgvector_report,
     recall_at_k,
@@ -24,7 +25,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
             vector_literal="[1,0]",
             tenant_id="tenant",
             user_id="user",
-            embedding_profile="profile",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
             minimum_similarity=0.3,
             document_ids=("11111111-1111-4111-8111-111111111111",),
             years=(2024,),
@@ -34,6 +35,12 @@ class PgvectorRecallMetricTests(unittest.TestCase):
         self.assertIn("c.tenant_id = %s", cte)
         self.assertIn("c.document_id = ANY(%s::uuid[])", cte)
         self.assertIn("EXTRACT(YEAR FROM COALESCE", cte)
+        self.assertIn(
+            "embedding_profile = "
+            "'embedding-space:v1:local:local-lexical-v2:1536'",
+            cte,
+        )
+        self.assertNotIn(LOCAL_EMBEDDING_PROFILE.identifier, query.params)
         self.assertIn([2024], query.params)
         self.assertNotIn("vector_distance <=", cte)
         self.assertIn("WHERE vector_distance <= %s", outer)
@@ -44,19 +51,27 @@ class PgvectorRecallMetricTests(unittest.TestCase):
                 vector_literal="[1,0]",
                 tenant_id="tenant",
                 user_id="user",
-                embedding_profile="profile",
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
                 minimum_similarity=float("nan"),
+            )
+        with self.assertRaises(ValueError):
+            build_document_semantic_query(
+                vector_literal="[1,0]",
+                tenant_id="tenant",
+                user_id="user",
+                embedding_profile="embedding-space:v1:local:x:1536' OR TRUE --",
+                minimum_similarity=0.3,
             )
         recorded = build_document_semantic_query(
             vector_literal="[1,0]", tenant_id="tenant", user_id="user",
-            embedding_profile="profile", minimum_similarity=0.3,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier, minimum_similarity=0.3,
             years=(2026,), temporal_authority="recorded",
         )
         self.assertIn("EXTRACT(YEAR FROM version.recorded_at)", recorded.sql)
         self.assertNotIn("COALESCE(version.source_time", recorded.sql)
         current = build_document_semantic_query(
             vector_literal="[1,0]", tenant_id="tenant", user_id="user",
-            embedding_profile="profile", minimum_similarity=0.3,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier, minimum_similarity=0.3,
             version_scope="current",
         )
         self.assertIn("d.current_version_id = version.id", current.sql)
@@ -75,7 +90,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
             vector_literal="[1,0]",
             tenant_id="tenant",
             user_id="user",
-            embedding_profile="profile",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
             minimum_similarity=0.3,
             years=(2024,),
             temporal_authority="source",
@@ -90,7 +105,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
                 vector_literal="[1,0]",
                 tenant_id="tenant",
                 user_id="user",
-                embedding_profile="profile",
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
                 minimum_similarity=0.3,
                 version_scope="as_of",
             )
@@ -98,7 +113,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
             vector_literal="[1,0]",
             tenant_id="tenant",
             user_id="user",
-            embedding_profile="profile",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
             minimum_similarity=0.3,
             year_start=2024,
             year_end=2025,
@@ -123,7 +138,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
                 vector_literal="[1,0]",
                 tenant_id="tenant",
                 user_id="user",
-                embedding_profile="profile",
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
                 minimum_similarity=0.3,
                 years=(2024,),
                 year_start=2024,
@@ -134,7 +149,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
             vector_literal="[1,0]",
             tenant_id="tenant",
             user_id="user",
-            embedding_profile="profile",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
             minimum_similarity=0.3,
             time_start=day_start,
             time_end=day_end,
@@ -148,7 +163,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
             vector_literal="[1,0]",
             tenant_id="tenant",
             user_id="user",
-            embedding_profile="profile",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
             minimum_similarity=0.3,
             time_end=day_end,
             temporal_authority="source",

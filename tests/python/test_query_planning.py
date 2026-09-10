@@ -537,7 +537,9 @@ class QueryPlanningTests(unittest.TestCase):
         document_id = "11111111-1111-4111-8111-111111111111"
         embedding = MagicMock()
         embedding.vector = [0.1, 0.2]
-        embedding.profile.identifier = "embedding-space:v1:test"
+        embedding.profile.identifier = (
+            "embedding-space:v1:local:local-lexical-v2:1536"
+        )
         cursor = MagicMock()
         cursor.fetchall.side_effect = [[], [], []]
         connection = MagicMock()
@@ -704,6 +706,43 @@ class QueryPlanningTests(unittest.TestCase):
             )
         embed_query.assert_not_called()
         get_connection.assert_not_called()
+
+    def test_memory_retrieval_exposes_a_fixed_profile_predicate_to_the_planner(self):
+        embedding = MagicMock()
+        embedding.vector = [0.1, 0.2]
+        embedding.profile.identifier = (
+            "embedding-space:v1:local:local-lexical-v2:1536"
+        )
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+
+        with patch.object(memory_module, "get_db_connection") as get_connection:
+            get_connection.return_value.__enter__.return_value = connection
+            result = memory_module.retrieve_relevant_memories(
+                "find a memory",
+                "tenant",
+                "user",
+                query_embedding=embedding,
+                allow_embedding_generation=False,
+            )
+
+        self.assertEqual(result, [])
+        retrieval_call = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "FROM memories" in call.args[0]
+        )
+        self.assertIn(
+            "embedding_profile = "
+            "'embedding-space:v1:local:local-lexical-v2:1536'",
+            retrieval_call.args[0],
+        )
+        self.assertNotIn(
+            "embedding-space:v1:local:local-lexical-v2:1536",
+            retrieval_call.args[1],
+        )
 
     def test_labeled_title_is_enforced_and_removed_from_retrieval_text(self):
         plan = make_plan(

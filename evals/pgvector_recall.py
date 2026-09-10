@@ -177,13 +177,29 @@ def _build_rows_and_cases() -> tuple[list[tuple[Any, ...]], list[QueryCase]]:
                 scoped_candidates.append(Candidate(vector, tag, recorded_day))
             next_id += 1
 
-    target = Scope("tenant-alpha", "user-alpha", "profile-primary")
-    other_user = Scope("tenant-alpha", "user-beta", "profile-primary")
-    noisy_tenant = Scope("tenant-noisy-a", "user-noisy", "profile-primary")
-    noisy_tenant_b = Scope("tenant-noisy-b", "user-noisy", "profile-primary")
-    noisy_tenant_c = Scope("tenant-noisy-c", "user-noisy", "profile-primary")
-    sparse_tenant = Scope("tenant-sparse", "user-sparse", "profile-primary")
-    wrong_profile = Scope("tenant-alpha", "user-alpha", "profile-other")
+    target = Scope(
+        "tenant-alpha", "user-alpha", LOCAL_EMBEDDING_PROFILE.identifier
+    )
+    other_user = Scope(
+        "tenant-alpha", "user-beta", LOCAL_EMBEDDING_PROFILE.identifier
+    )
+    noisy_tenant = Scope(
+        "tenant-noisy-a", "user-noisy", LOCAL_EMBEDDING_PROFILE.identifier
+    )
+    noisy_tenant_b = Scope(
+        "tenant-noisy-b", "user-noisy", LOCAL_EMBEDDING_PROFILE.identifier
+    )
+    noisy_tenant_c = Scope(
+        "tenant-noisy-c", "user-noisy", LOCAL_EMBEDDING_PROFILE.identifier
+    )
+    sparse_tenant = Scope(
+        "tenant-sparse", "user-sparse", LOCAL_EMBEDDING_PROFILE.identifier
+    )
+    wrong_profile = Scope(
+        "tenant-alpha",
+        "user-alpha",
+        "embedding-space:v1:openai:text-embedding-3-small:1536",
+    )
 
     add_rows(160, target)
     add_rows(40, target, ready=False)
@@ -557,9 +573,11 @@ def _create_joined_production_fixture(
         page_size=50,
     )
     cursor.execute("""
-        CREATE INDEX certus_joined_chunks_hnsw
+        CREATE INDEX certus_joined_chunks_hnsw_local
         ON chunks USING hnsw (embedding vector_cosine_ops)
         WITH (m = 16, ef_construction = 200)
+        WHERE embedding IS NOT NULL
+          AND embedding_profile = 'embedding-space:v1:local:local-lexical-v2:1536'
     """)
     cursor.execute("""
         CREATE INDEX certus_joined_chunks_fts
@@ -874,7 +892,7 @@ def _run_joined_production_cases(
             "ann_plan": {
                 "uses_hnsw": _contains_index_scan(
                     document,
-                    "certus_joined_chunks_hnsw",
+                    "certus_joined_chunks_hnsw_local",
                 ),
                 "planning_time_ms": round(
                     float(document.get("Planning Time", 0.0)),
@@ -1342,9 +1360,9 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
             ), 6)
 
             return {
-                "schema_version": 11,
+                "schema_version": 12,
                 "run": {
-                    "runner_id": "certus-filtered-pgvector-recall-v11",
+                    "runner_id": "certus-filtered-pgvector-recall-v12",
                     "provider_calls": 0,
                     "persistent_rows_written": 0,
                     "random_seed": 20260830,
@@ -1353,6 +1371,7 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
                     "row_count": len(rows),
                     "case_count": len(cases),
                     "hnsw": {
+                        "profile_isolation": "partial_hnsw_per_supported_profile",
                         "iterative_scan": "strict_order",
                         "m": 16,
                         "ef_construction": 200,
@@ -1504,6 +1523,12 @@ def check_pgvector_report(
                 failures.append(
                     f"Joined production queries did not prove exact instant scope: {case_id}"
                 )
+    if int(report.get("schema_version", 0)) >= 12:
+        if (
+            report.get("run", {}).get("hnsw", {}).get("profile_isolation")
+            != "partial_hnsw_per_supported_profile"
+        ):
+            failures.append("Production HNSW profile isolation was not declared")
     lexical_cases = report.get("lexical_query_cases", [])
     for case in lexical_cases:
         if not case.get("scope_correct", False):

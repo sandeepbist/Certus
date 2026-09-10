@@ -1,5 +1,6 @@
 import math
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from services.embedding.app import worker as embedding_worker
@@ -8,9 +9,11 @@ from services.shared.embeddings import (
     EMBEDDING_DIMENSIONS,
     LEGACY_EMBEDDING_PROFILE,
     LOCAL_EMBEDDING_PROFILE,
+    SUPPORTED_SERVING_EMBEDDING_PROFILES,
     configured_embedding_profile,
     local_lexical_embedding,
     parse_embedding_profile,
+    serving_embedding_profile_sql_literal,
     EmbeddingProfile,
 )
 from services.shared.embedding_registry import (
@@ -44,6 +47,29 @@ class LocalLexicalEmbeddingTests(unittest.TestCase):
 
 
 class EmbeddingProfileTests(unittest.TestCase):
+    def test_serving_profiles_have_closed_sql_literals_and_dedicated_indexes(self):
+        migration = Path(
+            "infra/db/migrations/055_embedding_profile_hnsw_isolation.sql"
+        ).read_text(encoding="utf-8")
+
+        for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
+            literal = serving_embedding_profile_sql_literal(identifier)
+            self.assertEqual(literal, f"'{identifier}'")
+            self.assertEqual(
+                migration.count(f"embedding_profile = {literal}"),
+                2,
+            )
+        for value in (
+            LEGACY_EMBEDDING_PROFILE.identifier,
+            "embedding-space:v1:local:x:1536' OR TRUE --",
+            None,
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                serving_embedding_profile_sql_literal(value)  # type: ignore[arg-type]
+        self.assertIn("DROP INDEX IF EXISTS idx_chunks_embedding", migration)
+        self.assertIn("DROP INDEX IF EXISTS idx_memories_embedding", migration)
+        self.assertIn("DROP INDEX IF EXISTS idx_semantic_cache_embedding", migration)
+
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):
             profile = configured_embedding_profile(api_key)
