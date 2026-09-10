@@ -25,6 +25,7 @@ from app.query_planning import (
     build_query_plan,
     validate_query_plan,
 )
+from app.conversation import build_conversation_context
 from app.retrieval import hybrid as hybrid_module
 from app.retrieval import memory as memory_module
 
@@ -44,6 +45,253 @@ def make_plan(query: str, tool_calls=()):
 
 
 class QueryPlanningTests(unittest.TestCase):
+    def test_short_follow_up_uses_only_the_latest_user_question_for_retrieval(self):
+        context = build_conversation_context([
+            {
+                "id": "older-run",
+                "input_query": "Explain the unrelated hiring plan",
+                "output_response": "Ignore this assistant output.",
+                "answer_status": "answered",
+            },
+            {
+                "id": "latest-run",
+                "input_query": "What was the Atlas revenue in 2023?",
+                "output_response": "The assistant claimed a value that must not be reused.",
+                "answer_status": "answered",
+            },
+        ])
+        plan = build_query_plan(
+            "What about 2024?",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            conversation_context=context,
+        )
+
+        self.assertTrue(plan.original_query_preserved)
+        self.assertTrue(plan.conversation_resolution.applied)
+        self.assertEqual(
+            plan.conversation_resolution.strategy,
+            "contiguous_user_question_chain",
+        )
+        self.assertEqual(
+            plan.conversation_resolution.source_run_ids,
+            ["latest-run"],
+        )
+        self.assertEqual(len(plan.conversation_resolution.source_question_sha256s), 1)
+        self.assertIn("Atlas revenue", plan.retrieval_query)
+        self.assertIn("2024", plan.retrieval_query)
+        self.assertNotIn("2023", plan.retrieval_query)
+        self.assertNotIn("What about", plan.retrieval_query)
+        self.assertNotIn("assistant claimed", plan.retrieval_query)
+        self.assertNotIn("hiring plan", plan.retrieval_query)
+        self.assertEqual(plan.detected_constraints.years, ["2024"])
+        self.assertIn(
+            "resolve_latest_user_reference:v1",
+            plan.deterministic_transformations,
+        )
+        self.assertEqual(plan.synthetic_rewrites, [])
+
+    def test_follow_up_inherits_only_explicit_narrowing_scope(self):
+        document_id = "11111111-1111-4111-8111-111111111111"
+        context = build_conversation_context([{
+            "id": "prior-run",
+            "input_query": (
+                f'Find margin in document ID {document_id} and '
+                'document titled "Atlas Ledger" from 2023'
+            ),
+            "output_response": "Prior answer",
+            "answer_status": "answered",
+        }])
+        plan = build_query_plan(
+            "And what changed in 2024?",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            conversation_context=context,
+        )
+
+        self.assertEqual(plan.detected_constraints.document_ids, [document_id])
+        self.assertEqual(
+            plan.detected_constraints.conversation_inherited_document_ids,
+            [document_id],
+        )
+        self.assertEqual(plan.detected_constraints.titles, ["Atlas Ledger"])
+        self.assertEqual(
+            plan.detected_constraints.conversation_inherited_titles,
+            ["Atlas Ledger"],
+        )
+        self.assertEqual(
+            plan.detected_constraints.document_scope_source,
+            "conversation_reference",
+        )
+        self.assertEqual(
+            plan.conversation_resolution.inherited_constraints,
+            ["document_ids", "titles"],
+        )
+        self.assertFalse(plan.conversation_resolution.permission_scope_broadened)
+
+    def test_product_selection_overrides_conversation_scope_and_standalone_turns_do_not_rewrite(self):
+        inherited_id = "11111111-1111-4111-8111-111111111111"
+        selected_id = "22222222-2222-4222-8222-222222222222"
+        context = build_conversation_context([{
+            "id": "prior-run",
+            "input_query": f"Find margin in document ID {inherited_id}",
+            "output_response": "Prior answer",
+            "answer_status": "answered",
+        }])
+        selected = build_query_plan(
+            "What about its margin?",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            selected_document_ids=[selected_id],
+            conversation_context=context,
+        )
+        standalone = build_query_plan(
+            "Find the 2024 Atlas margin in the annual report",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            conversation_context=context,
+        )
+
+        self.assertEqual(selected.detected_constraints.document_ids, [selected_id])
+        self.assertEqual(
+            selected.detected_constraints.conversation_inherited_document_ids,
+            [],
+        )
+        self.assertEqual(
+            selected.detected_constraints.document_scope_source,
+            "product_selection",
+        )
+        self.assertFalse(standalone.conversation_resolution.applied)
+        self.assertEqual(
+            standalone.retrieval_query,
+            "Find the 2024 Atlas margin in the annual report",
+        )
+
+    def test_explicit_current_document_scope_does_not_mix_with_inherited_scope(self):
+        inherited_id = "11111111-1111-4111-8111-111111111111"
+        current_id = "22222222-2222-4222-8222-222222222222"
+        context = build_conversation_context([{
+            "id": "prior-run",
+            "input_query": (
+                f'Find margin in document ID {inherited_id} and '
+                'document titled "Atlas Ledger"'
+            ),
+            "output_response": "Prior answer",
+            "answer_status": "answered",
+        }])
+
+        plan = build_query_plan(
+            f"And what about document ID {current_id}?",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            conversation_context=context,
+        )
+
+        self.assertEqual(plan.detected_constraints.document_ids, [current_id])
+        self.assertEqual(
+            plan.detected_constraints.conversation_inherited_document_ids,
+            [],
+        )
+        self.assertEqual(plan.detected_constraints.titles, [])
+        self.assertEqual(
+            plan.detected_constraints.conversation_inherited_titles,
+            [],
+        )
+        self.assertEqual(
+            plan.detected_constraints.document_scope_source,
+            "query_label",
+        )
+        self.assertEqual(plan.conversation_resolution.inherited_constraints, [])
+
+    def test_common_relative_and_expletive_words_do_not_trigger_a_rewrite(self):
+        context = build_conversation_context([{
+            "id": "prior-run",
+            "input_query": "Explain the unrelated hiring plan",
+            "output_response": "Prior answer",
+            "answer_status": "answered",
+        }])
+
+        for query in (
+            "Show documents that discuss Atlas revenue",
+            "Are there Atlas revenue reports?",
+        ):
+            with self.subTest(query=query):
+                plan = build_query_plan(
+                    query,
+                    [],
+                    selected_model="local-extractive",
+                    is_complex=False,
+                    conversation_context=context,
+                )
+                self.assertFalse(plan.conversation_resolution.applied)
+                self.assertEqual(plan.retrieval_query, query)
+
+    def test_anchored_anaphoric_question_resolves_without_a_prefix(self):
+        context = build_conversation_context([{
+            "id": "prior-run",
+            "input_query": "Find the Atlas operating margin in 2023",
+            "output_response": "Prior answer",
+            "answer_status": "answered",
+        }])
+
+        plan = build_query_plan(
+            "How did it change in 2024?",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            conversation_context=context,
+        )
+
+        self.assertTrue(plan.conversation_resolution.applied)
+        self.assertEqual(
+            plan.conversation_resolution.reference_signals,
+            ["anaphoric_reference"],
+        )
+        self.assertIn("Atlas operating margin", plan.retrieval_query)
+        self.assertIn("2024", plan.retrieval_query)
+        self.assertNotIn("2023", plan.retrieval_query)
+
+    def test_follow_up_chain_reaches_the_latest_self_contained_user_question(self):
+        context = build_conversation_context([
+            {
+                "id": "base-run",
+                "input_query": "Find the Atlas revenue in 2022",
+                "output_response": "Prior answer",
+                "answer_status": "answered",
+            },
+            {
+                "id": "follow-up-run",
+                "input_query": "What about operating margin in 2023?",
+                "output_response": "Another prior answer",
+                "answer_status": "answered",
+            },
+        ])
+
+        plan = build_query_plan(
+            "And how did it change in 2024?",
+            [],
+            selected_model="local-extractive",
+            is_complex=False,
+            conversation_context=context,
+        )
+
+        self.assertTrue(plan.conversation_resolution.applied)
+        self.assertEqual(
+            plan.conversation_resolution.source_run_ids,
+            ["base-run", "follow-up-run"],
+        )
+        self.assertIn("Atlas revenue", plan.retrieval_query)
+        self.assertIn("operating margin", plan.retrieval_query)
+        self.assertIn("2024", plan.retrieval_query)
+        self.assertNotIn("2022", plan.retrieval_query)
+        self.assertNotIn("2023", plan.retrieval_query)
+        self.assertNotIn("What about", plan.retrieval_query)
+
     def test_product_selection_is_authoritative_over_query_labeled_ids(self):
         selected_id = "22222222-2222-4222-8222-222222222222"
         mentioned_id = "11111111-1111-4111-8111-111111111111"

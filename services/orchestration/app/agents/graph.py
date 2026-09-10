@@ -298,6 +298,7 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
         is_complex=bool(router_details.get("is_complex")),
         selected_document_ids=state.get("selected_document_ids", []),
         selected_version_scope=state.get("selected_version_scope", "auto"),
+        conversation_context=state.get("conversation_context"),
     ).model_dump(mode="json")
     
     events.append({

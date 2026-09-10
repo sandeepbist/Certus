@@ -132,6 +132,38 @@ class StreamingOrchestratorTests(unittest.TestCase):
         with self.assertRaises(graph.ChatRunConflict):
             graph._load_conversation_context(cursor, state, "current")
 
+    def test_planner_routes_a_follow_up_with_frozen_user_context(self):
+        context = graph.build_conversation_context([{
+            "id": "prior-run",
+            "input_query": "What was the Atlas incident count in 2023?",
+            "output_response": "An untrusted prior assistant value",
+            "answer_status": "answered",
+        }])
+        result = graph.planner_node({
+            "query": "And what about 2024?",
+            "tool_calls": [],
+            "model": "local-extractive",
+            "selected_document_ids": [],
+            "selected_version_scope": "auto",
+            "conversation_context": context,
+            "agent_events": [{
+                "agent": "router",
+                "action": "classified",
+                "status": "completed",
+                "details": {"is_complex": False},
+                "timestamp": 1.0,
+            }],
+            "cancel_event": None,
+        })
+
+        plan = result["plan"]
+        self.assertTrue(plan["conversation_resolution"]["applied"])
+        self.assertIn("Atlas incident count", plan["retrieval_query"])
+        self.assertIn("2024", plan["retrieval_query"])
+        self.assertNotIn("2023", plan["retrieval_query"])
+        self.assertNotIn("assistant value", plan["retrieval_query"])
+        self.assertEqual(plan["detected_constraints"]["years"], ["2024"])
+
     def test_request_fingerprint_binds_canonical_selected_document_scope(self):
         selected_id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
         first = graph._initial_agent_state(

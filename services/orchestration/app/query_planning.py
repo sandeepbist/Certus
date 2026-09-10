@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Literal, Mapping
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from app.conversation import validate_conversation_context
 from services.shared.document_retrieval import (
     extract_temporal_years,
     infer_temporal_authority,
 )
 
 
-QUERY_PLAN_PROFILE = "certus_deterministic_query_plan:v13"
+QUERY_PLAN_PROFILE = "certus_deterministic_query_plan:v14"
 
 _UUID_TEXT = (
     r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
@@ -94,6 +96,29 @@ _INSTANT_AS_OF_PATTERN = re.compile(
     rf"(?<!\w)as\s+of\s+({_ZONED_INSTANT})",
     re.IGNORECASE,
 )
+_STANDALONE_YEAR_PATTERN = re.compile(r"(?<![\w.,-])(?:1\d{3}|2\d{3})(?![\w.,-])")
+_FOLLOW_UP_PREFIX_PATTERN = re.compile(
+    r"^(?:and\b|also\b|then\b|what\s+about\b|how\s+about\b|"
+    r"and\s+what\b|and\s+how\b)",
+    re.IGNORECASE,
+)
+_FOLLOW_UP_REFERENCE_PATTERN = re.compile(
+    r"^(?:"
+    r"(?:what|why|when|where|who|which|how(?:\s+(?:much|many|long))?)\s+"
+    r"(?:(?:(?:did|does|do|is|are|was|were|has|have|had|can|could|would|will)\s+|of\s+))?"
+    r"(?:it|its|they|them|their|those|these|the\s+(?:same|former|latter|above|previous\s+one))\b|"
+    r"(?:does|do|did|is|are|was|were|has|have|had|can|could|would|will)\s+"
+    r"(?:it|they|this|that|those|these)\b|"
+    r"(?:explain|summarize|verify|check|compare|expand\s+on|tell\s+me\s+about|show\s+me)\s+"
+    r"(?:it|them|this|that|those|these|the\s+(?:same|former|latter|above|previous\s+one))\b"
+    r")",
+    re.IGNORECASE,
+)
+_LEADING_REFERENCE_PATTERN = re.compile(
+    r"^(?:it|its|they|them|their|this|that|those|these|"
+    r"the\s+(?:same|former|latter|above|previous\s+one))\b",
+    re.IGNORECASE,
+)
 
 _DOCUMENT_TERMS = (
     "document", "documents", "file", "files", "pdf", "report", "paper",
@@ -141,9 +166,17 @@ class _StrictPlanModel(BaseModel):
 class QueryConstraints(_StrictPlanModel):
     document_ids: list[str]
     query_document_ids: list[str]
+    conversation_inherited_document_ids: list[str]
     product_selected_document_ids: list[str]
-    document_scope_source: Literal["all_documents", "query_label", "product_selection"]
+    document_scope_source: Literal[
+        "all_documents",
+        "query_label",
+        "conversation_reference",
+        "product_selection",
+    ]
     titles: list[str]
+    query_titles: list[str]
+    conversation_inherited_titles: list[str]
     quoted_phrases: list[str]
     years: list[str]
     temporal_authority: Literal["effective", "source", "recorded"]
@@ -215,8 +248,20 @@ class QueryPlanLimits(_StrictPlanModel):
     max_graph_depth: int
 
 
+class ConversationResolution(_StrictPlanModel):
+    profile: Literal["certus_deterministic_conversation_resolution:v1"]
+    applied: bool
+    strategy: Literal["none", "contiguous_user_question_chain"]
+    source_run_ids: list[str]
+    source_question_sha256s: list[str]
+    reference_signals: list[str]
+    standalone_query: str
+    inherited_constraints: list[str]
+    permission_scope_broadened: Literal[False]
+
+
 class QueryPlan(_StrictPlanModel):
-    profile: Literal["certus_deterministic_query_plan:v13"]
+    profile: Literal["certus_deterministic_query_plan:v14"]
     intent: Literal[
         "action",
         "comparison",
@@ -232,6 +277,7 @@ class QueryPlan(_StrictPlanModel):
     retrieval_query: str
     deterministic_transformations: list[str]
     synthetic_rewrites: list[str]
+    conversation_resolution: ConversationResolution
     detected_constraints: QueryConstraints
     enforcement: QueryPlanEnforcement
     branches: QueryBranches
@@ -254,6 +300,111 @@ def _contains_any(normalized_query: str, terms: Iterable[str]) -> bool:
 def _normalize_query_text(value: str) -> str:
     collapsed = " ".join(value.split()).strip()
     return re.sub(r"\s+([,.;:!?])", r"\1", collapsed)
+
+
+def _strip_follow_up_scaffold(value: str) -> str:
+    fragment = _FOLLOW_UP_PREFIX_PATTERN.sub(" ", value)
+    fragment = _normalize_query_text(fragment)
+    fragment = _FOLLOW_UP_REFERENCE_PATTERN.sub(" ", fragment)
+    fragment = _normalize_query_text(fragment)
+    fragment = _LEADING_REFERENCE_PATTERN.sub(" ", fragment)
+    return _normalize_query_text(fragment).strip(" ,.;:!?-")
+
+
+def _strip_prior_constraints(question: str) -> str:
+    topic = _mask_matches(
+        question,
+        (
+            _DOCUMENT_ID_PATTERN,
+            _TITLE_FILTER_PATTERN,
+            _ZONED_INSTANT_PATTERN,
+            _ISO_DATE_PATTERN,
+        ),
+    )
+    topic = _STANDALONE_YEAR_PATTERN.sub(" ", topic)
+    topic = _EXACT_VALUE_PATTERN.sub(" ", topic)
+    topic = _strip_follow_up_scaffold(topic)
+    topic = re.sub(
+        r"(?<!\w)(?:as\s+of|in|from|during|before|after|between|through|to)\s*$",
+        " ",
+        topic,
+        flags=re.IGNORECASE,
+    )
+    return _normalize_query_text(topic).strip(" ,.;:!?-")
+
+
+def _resolve_conversation_reference(
+    query: str,
+    conversation_context: Mapping[str, Any] | None,
+) -> tuple[ConversationResolution, str | None]:
+    normalized_query = _normalize_query_text(query)
+    empty = ConversationResolution(
+        profile="certus_deterministic_conversation_resolution:v1",
+        applied=False,
+        strategy="none",
+        source_run_ids=[],
+        source_question_sha256s=[],
+        reference_signals=[],
+        standalone_query=normalized_query,
+        inherited_constraints=[],
+        permission_scope_broadened=False,
+    )
+    if not conversation_context or len(normalized_query.split()) > 32:
+        return empty, None
+    context = validate_conversation_context(dict(conversation_context))
+    if not context["turns"]:
+        return empty, None
+    signals = _conversation_reference_signals(normalized_query)
+    if not signals:
+        return empty, None
+    turns = context["turns"]
+    source_index = len(turns) - 1
+    while source_index > 0 and _conversation_reference_signals(
+        _normalize_query_text(turns[source_index]["question"])
+    ):
+        source_index -= 1
+    source_turns = turns[source_index:]
+    topic_parts = [
+        topic
+        for turn in source_turns
+        if (topic := _strip_prior_constraints(turn["question"]))
+    ]
+    if not topic_parts:
+        return empty, None
+    current_fragment = _strip_follow_up_scaffold(normalized_query) or normalized_query
+    standalone_query = _normalize_query_text(". ".join([*topic_parts, current_fragment]))
+    scope_question = next(
+        (
+            turn["question"]
+            for turn in reversed(source_turns)
+            if _DOCUMENT_ID_PATTERN.search(turn["question"])
+            or _TITLE_FILTER_PATTERN.search(turn["question"])
+        ),
+        None,
+    )
+    return ConversationResolution(
+        profile="certus_deterministic_conversation_resolution:v1",
+        applied=True,
+        strategy="contiguous_user_question_chain",
+        source_run_ids=[turn["run_id"] for turn in source_turns],
+        source_question_sha256s=[
+            hashlib.sha256(turn["question"].encode("utf-8")).hexdigest()
+            for turn in source_turns
+        ],
+        reference_signals=signals,
+        standalone_query=standalone_query,
+        inherited_constraints=[],
+        permission_scope_broadened=False,
+    ), scope_question
+
+
+def _conversation_reference_signals(normalized_query: str) -> list[str]:
+    signals: list[str] = []
+    if _FOLLOW_UP_PREFIX_PATTERN.search(normalized_query):
+        signals.append("continuation_prefix")
+    if _FOLLOW_UP_REFERENCE_PATTERN.search(normalized_query):
+        signals.append("anaphoric_reference")
+    return signals
 
 
 def _unique_matches(pattern: re.Pattern[str], query: str, limit: int = 10) -> list[str]:
@@ -476,25 +627,33 @@ def build_query_plan(
     is_complex: bool,
     selected_document_ids: Iterable[str] = (),
     selected_version_scope: Literal["auto", "all_history", "current_only"] = "auto",
+    conversation_context: Mapping[str, Any] | None = None,
 ) -> QueryPlan:
     """Build a conservative, auditable plan without model-generated rewrites."""
     normalized_original = _normalize_query_text(query)
-    normalized = normalized_original.casefold()
+    resolution, prior_question = _resolve_conversation_reference(
+        normalized_original,
+        conversation_context,
+    )
+    planning_query = resolution.standalone_query
+    normalized_current = normalized_original.casefold()
+    normalized_routing = planning_query.casefold()
     tool_names = [
         str(call.get("tool_name"))
         for call in tool_calls
         if isinstance(call, Mapping) and call.get("tool_name")
     ]
     detected_titles = _unique_matches(_TITLE_FILTER_PATTERN, query, limit=6)
-    titles = detected_titles if len(detected_titles) <= 5 else []
-    query_without_title_filters = (
-        _TITLE_FILTER_PATTERN.sub(" ", query) if titles else query
+    query_titles = detected_titles if len(detected_titles) <= 5 else []
+    current_has_title_clause = bool(_TITLE_FILTER_PATTERN.search(query))
+    current_without_title_filters = (
+        _TITLE_FILTER_PATTERN.sub(" ", query) if query_titles else query
     )
-    quoted_phrases = _unique_matches(_QUOTED_PATTERN, query_without_title_filters)
-    identifiers = _unique_matches(_UUID_PATTERN, query_without_title_filters)
+    quoted_phrases = _unique_matches(_QUOTED_PATTERN, current_without_title_filters)
+    identifiers = _unique_matches(_UUID_PATTERN, current_without_title_filters)
     query_document_ids = [
         str(UUID(value))
-        for value in _unique_matches(_DOCUMENT_ID_PATTERN, query_without_title_filters)
+        for value in _unique_matches(_DOCUMENT_ID_PATTERN, current_without_title_filters)
     ]
     product_selected_document_ids: list[str] = []
     selected_seen: set[str] = set()
@@ -505,25 +664,63 @@ def build_query_plan(
             selected_seen.add(document_id)
         if len(product_selected_document_ids) > 10:
             raise ValueError("At most 10 documents can be selected for one query")
-    document_ids = product_selected_document_ids or query_document_ids
+    inherited_document_ids: list[str] = []
+    inherited_titles: list[str] = []
+    if (
+        resolution.applied
+        and prior_question
+        and not product_selected_document_ids
+        and not query_document_ids
+        and not current_has_title_clause
+    ):
+        inherited_document_ids = [
+            str(UUID(value))
+            for value in _unique_matches(_DOCUMENT_ID_PATTERN, prior_question)
+        ]
+        prior_titles = _unique_matches(_TITLE_FILTER_PATTERN, prior_question, limit=6)
+        inherited_titles = prior_titles if len(prior_titles) <= 5 else []
+    titles = query_titles or inherited_titles
+    document_ids = (
+        product_selected_document_ids
+        or query_document_ids
+        or inherited_document_ids
+    )
     document_scope_source = (
         "product_selection"
         if product_selected_document_ids
-        else "query_label" if query_document_ids else "all_documents"
+        else "query_label"
+        if query_document_ids
+        else "conversation_reference"
+        if inherited_document_ids or inherited_titles
+        else "all_documents"
+    )
+    inherited_constraints = []
+    if inherited_document_ids:
+        inherited_constraints.append("document_ids")
+    if inherited_titles:
+        inherited_constraints.append("titles")
+    resolution = resolution.model_copy(
+        update={"inherited_constraints": inherited_constraints}
+    )
+    retrieval_without_title_filters = (
+        _TITLE_FILTER_PATTERN.sub(" ", planning_query)
+        if query_titles else planning_query
     )
     query_without_explicit_document_ids = _DOCUMENT_ID_PATTERN.sub(
-        " ", query_without_title_filters
+        " ", retrieval_without_title_filters
     )
     retrieval_query = _normalize_query_text(query_without_explicit_document_ids)
     deterministic_transformations = []
-    if query_without_title_filters != query:
+    if query_titles:
         deterministic_transformations.append("remove_explicit_title_clause:v1")
-    if _DOCUMENT_ID_PATTERN.search(query_without_title_filters):
+    if _DOCUMENT_ID_PATTERN.search(retrieval_without_title_filters):
         deterministic_transformations.append("remove_explicit_document_id_clause:v1")
+    if resolution.applied:
+        deterministic_transformations.append("resolve_latest_user_reference:v1")
     if not retrieval_query:
         retrieval_query = " ".join(titles) if titles else query
     query_without_document_ids = _UUID_PATTERN.sub(
-        " ", query_without_title_filters
+        " ", current_without_title_filters
     )
     years = [str(year) for year in extract_temporal_years(query_without_document_ids)]
     temporal_authority = infer_temporal_authority(query_without_document_ids)
@@ -543,20 +740,20 @@ def build_query_plan(
     time_window_requested = instant_window_requested or date_window_requested
     exact_values = _extract_exact_values(query_without_document_ids)
 
-    document_focused = _contains_any(normalized, _DOCUMENT_TERMS)
-    memory_focused = _contains_any(normalized, _MEMORY_TERMS)
-    relationship_focused = _contains_any(normalized, _RELATIONSHIP_TERMS)
-    comparison = _contains_any(normalized, _COMPARISON_TERMS)
+    document_focused = _contains_any(normalized_routing, _DOCUMENT_TERMS)
+    memory_focused = _contains_any(normalized_routing, _MEMORY_TERMS)
+    relationship_focused = _contains_any(normalized_routing, _RELATIONSHIP_TERMS)
+    comparison = _contains_any(normalized_routing, _COMPARISON_TERMS)
     temporal = (
         bool(years)
         or time_window_requested
-        or _contains_any(normalized, _TEMPORAL_TERMS)
+        or _contains_any(normalized_current, _TEMPORAL_TERMS)
     )
     exact_lookup = bool(identifiers or quoted_phrases or exact_values) or _contains_any(
-        normalized,
+        normalized_routing,
         _EXACT_LOOKUP_TERMS,
     )
-    multi_hop = _contains_any(normalized, _MULTI_HOP_TERMS)
+    multi_hop = _contains_any(normalized_routing, _MULTI_HOP_TERMS)
     tool_only = bool(tool_names) and set(tool_names).issubset(_SELF_CONTAINED_TOOLS)
 
     if tool_names:
@@ -582,9 +779,9 @@ def build_query_plan(
     title_filter_applied = use_documents and bool(titles)
     if selected_version_scope not in {"auto", "all_history", "current_only"}:
         raise ValueError("Unsupported product-selected version scope")
-    as_of_requested = _contains_any(normalized, ("as of",))
-    current_requested = _contains_any(normalized, ("latest", "current"))
-    all_history_requested = _contains_any(normalized, _ALL_HISTORY_VERSION_TERMS)
+    as_of_requested = _contains_any(normalized_current, ("as of",))
+    current_requested = _contains_any(normalized_current, ("latest", "current"))
+    all_history_requested = _contains_any(normalized_current, _ALL_HISTORY_VERSION_TERMS)
     if as_of_requested:
         query_requested_version_scope = "as_of_requested"
     elif all_history_requested:
@@ -678,12 +875,16 @@ def build_query_plan(
         retrieval_query=retrieval_query,
         deterministic_transformations=deterministic_transformations,
         synthetic_rewrites=[],
+        conversation_resolution=resolution,
         detected_constraints=QueryConstraints(
             document_ids=document_ids,
             query_document_ids=query_document_ids,
+            conversation_inherited_document_ids=inherited_document_ids,
             product_selected_document_ids=product_selected_document_ids,
             document_scope_source=document_scope_source,
             titles=titles,
+            query_titles=query_titles,
+            conversation_inherited_titles=inherited_titles,
             quoted_phrases=quoted_phrases,
             years=years,
             temporal_authority=temporal_authority,
@@ -721,7 +922,10 @@ def build_query_plan(
                 "Product-selected document identifiers are the authoritative allow-list; "
                 "query-labeled identifiers cannot broaden it. Otherwise, explicit document "
                 "identifiers and labeled exact titles are enforced by document retrieval when "
-                "marked applied. Detected four-digit years are "
+                "marked applied. A short referential follow-up may inherit the latest user "
+                "turn's explicit document identifiers or title only when the current turn "
+                "supplies no document scope; assistant output is never reused. Detected "
+                "four-digit years are "
                 "enforced against source "
                 "time with recorded-time fallback; explicit before/after/range operators "
                 "become bounded year, strict ISO-date, or timezone-aware instant windows. "
