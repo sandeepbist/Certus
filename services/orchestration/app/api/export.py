@@ -17,6 +17,7 @@ from app.retrieval.export_archive import (
 router = APIRouter(prefix="", tags=["Data Portability & GDPR Compliance"])
 
 EXPORT_RETENTION_HOURS = 48
+EXPORT_SCHEMA_VERSION = 10
 
 
 class _BudgetedExportCursor:
@@ -289,6 +290,35 @@ def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
         """,
         tenant_user,
     )
+    embedding_generations = _rows(
+        cursor,
+        """
+        SELECT id, tenant_id, user_id, embedding_profile,
+               source_corpus_revision, status, expected_chunk_count,
+               embedded_chunk_count, failed_chunk_count, evaluation_report,
+               previous_generation_id, last_error, created_at, updated_at,
+               sealed_at, activated_at, retired_at, stale_at, rollback_until,
+               retain_until
+        FROM workspace_embedding_generations
+        WHERE tenant_id = %s AND user_id = %s
+        ORDER BY created_at, id
+        """,
+        tenant_user,
+    )
+    chunk_embedding_vector_manifests = _rows(
+        cursor,
+        """
+        SELECT generation_id, chunk_id, tenant_id, user_id, content_sha256,
+               embedding_profile, status, is_serving, provider_metadata,
+               attempt_count, last_error_code, last_error, created_at,
+               updated_at, last_attempt_at, embedded_at,
+               false AS embedding_payload_included
+        FROM chunk_embedding_vectors
+        WHERE tenant_id = %s AND user_id = %s
+        ORDER BY generation_id, chunk_id
+        """,
+        tenant_user,
+    )
     embedding_profiles = _rows(
         cursor,
         """
@@ -317,9 +347,14 @@ def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
                   WHERE memory.embedding_profile = profile.identifier
                     AND memory.tenant_id = %s AND memory.user_id = %s
               )
+           OR EXISTS (
+                  SELECT 1 FROM workspace_embedding_generations AS generation
+                  WHERE generation.embedding_profile = profile.identifier
+                    AND generation.tenant_id = %s AND generation.user_id = %s
+              )
         ORDER BY profile.identifier
         """,
-        tenant_user * 4,
+        tenant_user * 5,
     )
     chat_sessions = _rows(
         cursor,
@@ -516,6 +551,8 @@ def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
         "document_derivations": document_derivations,
         "chunks": chunks,
         "document_embedding_jobs": document_embedding_jobs,
+        "embedding_generations": embedding_generations,
+        "chunk_embedding_vector_manifests": chunk_embedding_vector_manifests,
         "embedding_profiles": embedding_profiles,
         "chat_sessions": chat_sessions,
         "tasks": tasks,
@@ -563,7 +600,7 @@ def generate_data_export(identity: RequestIdentity = Depends(require_request_ide
             counts = record_counts(data)
             payload = {
                 "manifest": {
-                    "schema_version": 9,
+                    "schema_version": EXPORT_SCHEMA_VERSION,
                     "product": "Certus",
                     "exported_at": now,
                     "tenant_id": identity.tenant_id,
@@ -575,6 +612,16 @@ def generate_data_export(identity: RequestIdentity = Depends(require_request_ide
                         "TOTP secrets",
                         "passkey credential material",
                         "webhook signing secrets",
+                    ],
+                    "derived_data_excluded": [
+                        {
+                            "field": "chunk_embedding_vectors.embedding",
+                            "reason": (
+                                "Generation vectors are reproducible derived data. "
+                                "Rebuild from exact chunk membership and content hashes, "
+                                "then re-evaluate before activation."
+                            ),
+                        }
                     ],
                     "record_counts": counts,
                 },
