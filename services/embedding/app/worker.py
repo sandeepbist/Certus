@@ -35,6 +35,7 @@ from services.shared.embedding_generation_worker import (
 from services.shared.worker_runtime import (
     WorkerIdentity,
     bounded_int_env,
+    bounded_retention_days_env,
     connect_database,
     redis_connection_options,
     write_worker_heartbeat,
@@ -76,6 +77,15 @@ EMBEDDING_GENERATION_RETRY_BASE_SECONDS = bounded_int_env(
 )
 EMBEDDING_GENERATION_RETRY_MAX_SECONDS = bounded_int_env(
     "EMBEDDING_GENERATION_RETRY_MAX_SECONDS", 3_600, 1, 86_400
+)
+EMBEDDING_GENERATION_RETENTION_DAYS = bounded_retention_days_env(
+    "EMBEDDING_GENERATION_RETENTION_DAYS", 30
+)
+EMBEDDING_GENERATION_PRUNE_BATCH_SIZE = bounded_int_env(
+    "EMBEDDING_GENERATION_PRUNE_BATCH_SIZE", 25, 1, 1_000
+)
+EMBEDDING_GENERATION_PRUNE_INTERVAL_SECONDS = bounded_int_env(
+    "EMBEDDING_GENERATION_PRUNE_INTERVAL_SECONDS", 3_600, 60, 86_400
 )
 DATABASE_CONNECT_TIMEOUT_SECONDS = bounded_int_env(
     "EMBEDDING_DB_CONNECT_TIMEOUT_SECONDS", 3, 1, 30
@@ -1251,6 +1261,28 @@ def process_one_embedding_generation_batch(conn) -> bool:
     return True
 
 
+def prune_terminal_embedding_generations(conn) -> tuple[int, int]:
+    """Delete one bounded batch of safely expired generation-derived data."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT detached_predecessors, deleted_generations
+                FROM prune_embedding_generations(%s, %s)
+                """,
+                (
+                    EMBEDDING_GENERATION_RETENTION_DAYS,
+                    EMBEDDING_GENERATION_PRUNE_BATCH_SIZE,
+                ),
+            )
+            row = cursor.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return int(row[0]), int(row[1])
+
+
 def claim_stale_messages(redis_client):
     claimed = redis_client.xautoclaim(
         STREAM_KEY,
@@ -1449,6 +1481,7 @@ def run_worker():
         )
         last_pending_claim_at = 0.0
         last_heartbeat_at = 0.0
+        last_generation_prune_at = 0.0
 
         while not STOP_REQUESTED.is_set():
             try:
@@ -1457,6 +1490,20 @@ def run_worker():
                     last_metadata = embedding_queue_metadata(conn)
                     record_worker_heartbeat("running", last_metadata)
                     last_heartbeat_at = now
+
+                if (
+                    now - last_generation_prune_at
+                    >= EMBEDDING_GENERATION_PRUNE_INTERVAL_SECONDS
+                ):
+                    detached, deleted = prune_terminal_embedding_generations(conn)
+                    if detached or deleted:
+                        logger.info(
+                            "Embedding generation retention detached %s predecessors "
+                            "and deleted %s terminal generations",
+                            detached,
+                            deleted,
+                        )
+                    last_generation_prune_at = now
 
                 stale_messages = []
                 if now - last_pending_claim_at >= 30:

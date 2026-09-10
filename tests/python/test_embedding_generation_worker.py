@@ -122,6 +122,25 @@ class EmbeddingGenerationWorkerPrimitiveTests(unittest.TestCase):
 
 
 class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
+    def test_retention_uses_the_bounded_database_owned_policy(self):
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = (2, 3)
+
+        result = embedding_worker.prune_terminal_embedding_generations(connection)
+
+        self.assertEqual(result, (2, 3))
+        sql, params = cursor.execute.call_args.args
+        self.assertIn("prune_embedding_generations", sql)
+        self.assertEqual(
+            params,
+            (
+                embedding_worker.EMBEDDING_GENERATION_RETENTION_DAYS,
+                embedding_worker.EMBEDDING_GENERATION_PRUNE_BATCH_SIZE,
+            ),
+        )
+        connection.commit.assert_called_once()
+
     def test_processes_one_database_batch_with_the_configured_profile(self):
         connection = MagicMock()
         claimed = [candidate()]

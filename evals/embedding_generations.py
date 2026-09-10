@@ -36,9 +36,9 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if (
         report.get("schema", {}).get("latest_migration")
-        != "059_embedding_generation_operator_api.sql"
+        != "060_embedding_generation_retention.sql"
     ):
-        failures.append("migration 059 is not the active embedding-generation contract")
+        failures.append("migration 060 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -494,8 +494,8 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
                 "WHERE filename LIKE '%embedding%' ORDER BY filename"
             )
             migrations = [str(row[0]) for row in cursor.fetchall()]
-            if "059_embedding_generation_operator_api.sql" not in migrations:
-                raise EmbeddingGenerationEvaluationError("migration 059 is not applied")
+            if "060_embedding_generation_retention.sql" not in migrations:
+                raise EmbeddingGenerationEvaluationError("migration 060 is not applied")
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
             )
@@ -511,7 +511,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "059_embedding_generation_operator_api.sql",
+                "latest_migration": "060_embedding_generation_retention.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,
