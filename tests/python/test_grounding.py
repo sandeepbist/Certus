@@ -161,7 +161,14 @@ class AtomicGroundingTests(unittest.TestCase):
         self.assertIn("Directly matching workspace excerpts", result["response"])
 
     def test_replay_manifest_references_documents_and_snapshots_other_sources(self):
-        manifest = build_evidence_manifest(self.pack)
+        generation_id = "11111111-1111-4111-8111-111111111111"
+        pack = build_evidence_pack(
+            [chunk(embedding_generation_id=generation_id)],
+            [{"id": "memory-1", "fact": "The preferred language is English.", "category": "preference"}],
+            ["(Budget) -[CO_MENTIONED]- (Research)"],
+            [{"tool": "create_task", "status": "completed", "task_id": "task-7"}],
+        )
+        manifest = build_evidence_manifest(pack)
 
         self.assertEqual(manifest["profile"], EVIDENCE_MANIFEST_PROFILE)
         self.assertEqual(manifest["source_count"], 4)
@@ -170,6 +177,10 @@ class AtomicGroundingTests(unittest.TestCase):
         memory = manifest["sources"][1]
         self.assertNotIn("content_snapshot", document)
         self.assertEqual(document["locator"]["chunk_id"], "chunk-1")
+        self.assertEqual(
+            document["locator"]["embedding_generation_id"],
+            generation_id,
+        )
         self.assertEqual(memory["content_snapshot"], "The preferred language is English.")
         self.assertEqual(memory["locator"]["memory_id"], "memory-1")
 

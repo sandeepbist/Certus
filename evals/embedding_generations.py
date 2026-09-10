@@ -6,6 +6,10 @@ from typing import Any
 
 import psycopg2
 
+from services.shared.document_retrieval import build_document_semantic_query
+from services.shared.embeddings import LOCAL_EMBEDDING_PROFILE
+from services.shared.pgvector_policy import configure_filtered_hnsw
+
 
 class EmbeddingGenerationEvaluationError(RuntimeError):
     """The shadow-generation contract could not be verified safely."""
@@ -22,8 +26,8 @@ APPROVED_REPORT = {
 
 def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    if report.get("schema", {}).get("latest_migration") != "043_embedding_generation_concurrency.sql":
-        failures.append("migration 043 is not the active shadow-generation contract")
+    if report.get("schema", {}).get("latest_migration") != "057_embedding_generation_insert_fence.sql":
+        failures.append("migration 057 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -39,6 +43,22 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("non-empty candidate coverage was incomplete")
         if nonempty.get("sealed") is not True:
             failures.append("a complete non-empty generation did not seal")
+        if nonempty.get("activated") is not True:
+            failures.append("a sealed non-empty generation did not activate")
+        if nonempty.get("post_activation_insert_rejected") is not True:
+            failures.append("an active generation accepted a late candidate insert")
+        if nonempty.get("serving_query_uses_hnsw") is not True:
+            failures.append("active-generation retrieval did not use its serving HNSW graph")
+        if nonempty.get("served_generation_bound") is not True:
+            failures.append("active-generation retrieval returned an unbound vector")
+        if nonempty.get("serving_membership_complete") is not True:
+            failures.append("active generation did not publish its complete vector set")
+        if nonempty.get("cutover_serving_counts") != [0, nonempty.get("chunk_count")]:
+            failures.append("cutover did not move serving membership atomically")
+        if nonempty.get("rollback_serving_counts") != [nonempty.get("chunk_count"), 0]:
+            failures.append("rollback did not restore serving membership atomically")
+        if nonempty.get("stale_removed_from_serving") is not True:
+            failures.append("stale generation vectors remained in ANN serving")
     if report.get("run", {}).get("persistent_rows") != 0:
         failures.append("evaluation rows remained after rollback")
     if report.get("run", {}).get("provider_calls") != 0:
@@ -63,6 +83,31 @@ def _statuses(cursor: Any, generation_ids: list[str]) -> list[str]:
         )
         statuses.append(str(cursor.fetchone()[0]))
     return statuses
+
+
+def _contains_index_scan(plan: Any, index_name: str) -> bool:
+    if isinstance(plan, dict):
+        if plan.get("Index Name") == index_name:
+            return True
+        return any(_contains_index_scan(value, index_name) for value in plan.values())
+    if isinstance(plan, list):
+        return any(_contains_index_scan(value, index_name) for value in plan)
+    return False
+
+
+def _serving_counts(cursor: Any, generation_ids: list[str]) -> list[int]:
+    counts: list[int] = []
+    for generation_id in generation_ids:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM chunk_embedding_vectors
+            WHERE generation_id = %s AND is_serving = true
+            """,
+            (generation_id,),
+        )
+        counts.append(int(cursor.fetchone()[0]))
+    return counts
 
 
 def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str, Any]:
@@ -123,6 +168,7 @@ def _eligible_small_scope(cursor: Any) -> tuple[str, str] | None:
           AND version.status = 'ready'
           AND chunk.derivation_id = version.current_derivation_id
           AND chunk.embedding IS NOT NULL
+          AND chunk.embedding_profile = %s
           AND NOT EXISTS (
               SELECT 1 FROM workspace_embedding_generations AS generation
               WHERE generation.tenant_id = chunk.tenant_id
@@ -133,7 +179,8 @@ def _eligible_small_scope(cursor: Any) -> tuple[str, str] | None:
            AND COUNT(*) = COUNT(chunk.embedding)
         ORDER BY COUNT(*), chunk.tenant_id, chunk.user_id
         LIMIT 1
-        """
+        """,
+        (LOCAL_EMBEDDING_PROFILE.identifier,),
     )
     row = cursor.fetchone()
     return (str(row[0]), str(row[1])) if row else None
@@ -209,12 +256,168 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
         )
         expected, embedded, failed = (int(value) for value in cursor.fetchone())
         sealed = _seal(cursor, generation_id)
+        cursor.execute(
+            "SELECT activate_workspace_embedding_generation(%s)",
+            (generation_id,),
+        )
+        activated = bool(cursor.fetchone()[0])
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM chunk_embedding_vectors
+            WHERE generation_id = %s
+              AND status = 'embedded'
+              AND is_serving = true
+              AND embedding_profile = %s
+            """,
+            (generation_id, LOCAL_EMBEDDING_PROFILE.identifier),
+        )
+        serving_count = int(cursor.fetchone()[0])
+
+        cursor.execute("SAVEPOINT post_activation_insert_fence")
+        try:
+            cursor.execute(
+                """
+                INSERT INTO chunk_embedding_vectors (
+                    generation_id, chunk_id, tenant_id, user_id,
+                    content_sha256, status, embedding, provider_metadata,
+                    attempt_count, embedded_at, embedding_profile, is_serving
+                )
+                SELECT generation_id, chunk_id, tenant_id, user_id,
+                       content_sha256, status, embedding, provider_metadata,
+                       attempt_count, embedded_at, embedding_profile, is_serving
+                FROM chunk_embedding_vectors
+                WHERE generation_id = %s
+                LIMIT 1
+                """,
+                (generation_id,),
+            )
+        except psycopg2.Error as error:
+            post_activation_insert_rejected = (
+                "embedding candidates can be added only while a generation is building"
+                in str(error)
+            )
+            cursor.execute("ROLLBACK TO SAVEPOINT post_activation_insert_fence")
+        else:
+            cursor.execute("ROLLBACK TO SAVEPOINT post_activation_insert_fence")
+            post_activation_insert_rejected = False
+
+        cursor.execute(
+            "SELECT start_workspace_embedding_generation(%s, %s, %s)",
+            (tenant_id, user_id, LOCAL_EMBEDDING_PROFILE.identifier),
+        )
+        replacement_generation_id = str(cursor.fetchone()[0])
+        replacement_owner = str(uuid.uuid4())
+        while True:
+            cursor.execute(
+                "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 100, 60)",
+                (replacement_generation_id, replacement_owner),
+            )
+            chunk_ids = [str(row[0]) for row in cursor.fetchall()]
+            if not chunk_ids:
+                break
+            for chunk_id in chunk_ids:
+                cursor.execute(
+                    "SELECT embedding::text FROM chunks WHERE id = %s",
+                    (chunk_id,),
+                )
+                vector = str(cursor.fetchone()[0])
+                cursor.execute(
+                    "SELECT record_chunk_embedding_vector(%s, %s, %s, %s::vector, %s::jsonb)",
+                    (
+                        replacement_generation_id,
+                        chunk_id,
+                        replacement_owner,
+                        vector,
+                        '{"control_plane_replacement":true}',
+                    ),
+                )
+                if not cursor.fetchone()[0]:
+                    raise EmbeddingGenerationEvaluationError(
+                        "replacement generation vector was not committed"
+                    )
+        if not _seal(cursor, replacement_generation_id):
+            raise EmbeddingGenerationEvaluationError(
+                "complete replacement generation did not seal"
+            )
+        cursor.execute(
+            "SELECT activate_workspace_embedding_generation(%s)",
+            (replacement_generation_id,),
+        )
+        if not cursor.fetchone()[0]:
+            raise EmbeddingGenerationEvaluationError(
+                "complete replacement generation did not activate"
+            )
+        cutover_serving_counts = _serving_counts(
+            cursor,
+            [generation_id, replacement_generation_id],
+        )
+        cursor.execute(
+            "SELECT rollback_workspace_embedding_generation(%s)",
+            (replacement_generation_id,),
+        )
+        if not cursor.fetchone()[0]:
+            raise EmbeddingGenerationEvaluationError(
+                "replacement generation did not roll back"
+            )
+        rollback_serving_counts = _serving_counts(
+            cursor,
+            [generation_id, replacement_generation_id],
+        )
+
+        semantic_query = build_document_semantic_query(
+            vector_literal=first_vector,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            embedding_generation_id=generation_id,
+            minimum_similarity=-1.0,
+            candidate_limit=min(expected, 20),
+        )
+        configure_filtered_hnsw(cursor)
+        cursor.execute("SET LOCAL enable_seqscan = off")
+        cursor.execute(semantic_query.sql, semantic_query.params)
+        served_rows = cursor.fetchall()
+        cursor.execute(
+            "EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) "
+            + semantic_query.sql,
+            semantic_query.params,
+        )
+        plan = cursor.fetchone()[0][0]
+        cursor.execute("SET LOCAL enable_seqscan = on")
+
+        cursor.execute(
+            "SELECT invalidate_workspace_embedding_scope(%s, %s)",
+            (tenant_id, user_id),
+        )
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM chunk_embedding_vectors
+            WHERE generation_id = %s AND is_serving = true
+            """,
+            (generation_id,),
+        )
+        stale_serving_count = int(cursor.fetchone()[0])
         return {
             "skipped": False,
             "chunk_count": expected,
             "wrong_owner_rejected": wrong_owner_rejected,
             "coverage_complete": embedded == expected and failed == 0,
             "sealed": sealed,
+            "activated": activated,
+            "post_activation_insert_rejected": post_activation_insert_rejected,
+            "serving_membership_complete": serving_count == expected,
+            "cutover_serving_counts": cutover_serving_counts,
+            "rollback_serving_counts": rollback_serving_counts,
+            "serving_query_uses_hnsw": _contains_index_scan(
+                plan,
+                "idx_chunk_embedding_vectors_local_lexical_v2",
+            ),
+            "served_generation_bound": bool(served_rows) and all(
+                str(row[3]) == generation_id for row in served_rows
+            ),
+            "stale_removed_from_serving": stale_serving_count == 0,
         }
     finally:
         cursor.execute("ROLLBACK TO SAVEPOINT nonempty_generation_contract")
@@ -232,11 +435,12 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         with connection.cursor() as cursor:
             cursor.execute("SET LOCAL statement_timeout = '60s'")
             cursor.execute(
-                "SELECT filename FROM schema_migrations WHERE filename LIKE '04%embedding%' ORDER BY filename"
+                "SELECT filename FROM schema_migrations "
+                "WHERE filename LIKE '%embedding%' ORDER BY filename"
             )
             migrations = [str(row[0]) for row in cursor.fetchall()]
-            if "043_embedding_generation_concurrency.sql" not in migrations:
-                raise EmbeddingGenerationEvaluationError("migration 043 is not applied")
+            if "057_embedding_generation_insert_fence.sql" not in migrations:
+                raise EmbeddingGenerationEvaluationError("migration 057 is not applied")
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
             )
@@ -252,7 +456,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "043_embedding_generation_concurrency.sql",
+                "latest_migration": "057_embedding_generation_insert_fence.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,

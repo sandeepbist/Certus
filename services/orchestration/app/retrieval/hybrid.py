@@ -34,6 +34,7 @@ from services.shared.embeddings import (
 from services.shared.document_retrieval import (
     DEFAULT_SEMANTIC_CANDIDATE_LIMIT,
     MAX_SEMANTIC_CANDIDATE_LIMIT,
+    build_active_embedding_generation_query,
     build_document_lexical_queries,
     build_document_semantic_query,
 )
@@ -254,7 +255,8 @@ class RetrievedChunk:
         end_char: Optional[int] = None,
         text_locator_status: str = "unavailable",
         text_locator_profile: str = "legacy_unavailable:v0",
-        retrieval_method: str = "hybrid"
+        retrieval_method: str = "hybrid",
+        embedding_generation_id: Optional[str] = None,
     ):
         self.chunk_id = chunk_id
         self.document_id = document_id
@@ -276,6 +278,7 @@ class RetrievedChunk:
         self.text_locator_status = text_locator_status
         self.text_locator_profile = text_locator_profile
         self.retrieval_method = retrieval_method
+        self.embedding_generation_id = embedding_generation_id
 
     def to_dict(self) -> Dict[str, Any]:
         source_time = (
@@ -309,6 +312,7 @@ class RetrievedChunk:
             "text_locator_status": self.text_locator_status,
             "text_locator_profile": self.text_locator_profile,
             "retrieval_method": self.retrieval_method,
+            "embedding_generation_id": self.embedding_generation_id,
         }
 
 
@@ -404,6 +408,18 @@ class HybridSearchEngine:
                         vec_str = (
                             f"[{','.join(str(v) for v in resolved_embedding.vector)}]"
                         )
+                        generation_query = build_active_embedding_generation_query(
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            embedding_profile=resolved_embedding.profile.identifier,
+                        )
+                        cursor.execute(generation_query.sql, generation_query.params)
+                        generation_row = cursor.fetchone()
+                        embedding_generation_id = (
+                            str(generation_row["id"])
+                            if generation_row is not None
+                            else None
+                        )
                         # Retained versions and derivations make this a heavily filtered ANN
                         # query. pgvector 0.8+ iterative scans continue until enough eligible
                         # candidates are found while preserving exact distance ordering.
@@ -424,6 +440,7 @@ class HybridSearchEngine:
                             temporal_authority=normalized_temporal_authority,
                             version_scope=normalized_version_scope,
                             candidate_limit=candidate_limit,
+                            embedding_generation_id=embedding_generation_id,
                         )
                         cursor.execute(semantic_query.sql, semantic_query.params)
                         semantic_results = cursor.fetchall()
@@ -515,6 +532,11 @@ class HybridSearchEngine:
                     text_locator_status=data.get("text_locator_status", "unavailable"),
                     text_locator_profile=data.get(
                         "text_locator_profile", "legacy_unavailable:v0"
+                    ),
+                    embedding_generation_id=(
+                        str(data["embedding_generation_id"])
+                        if data.get("embedding_generation_id") is not None
+                        else None
                     ),
                 )
             )

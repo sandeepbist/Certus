@@ -62,6 +62,14 @@ def main() -> int:
         print(payload, end="")
     else:
         aggregate = report["aggregate"]
+        generation_plan = report["generation_query_cases"][0]["ann_plan"]
+        generation_access = (
+            "hnsw"
+            if generation_plan["uses_hnsw"]
+            else "bounded-exact"
+            if generation_plan["bounded_exact"]
+            else "invalid"
+        )
         print(
             "pgvector filtered ANN evaluation: "
             f"version={report['run']['pgvector_version']} "
@@ -74,6 +82,7 @@ def main() -> int:
             f"{aggregate['production_query_minimum_recall_at_20']:.3f} "
             "joined-hnsw="
             f"{aggregate['production_query_hnsw_plan_case_rate']:.3f} "
+            f"generation-access={generation_access} "
             f"joined-fts-gin={int(report['lexical_query_cases'][0]['fts_plan']['uses_gin'])} "
             f"rrf-recall@5={report['seed_corpus']['evidence_recall_at_5']:.3f} "
             f"rrf-mrr@20={report['seed_corpus']['mrr_at_20']:.3f} "

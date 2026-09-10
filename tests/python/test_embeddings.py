@@ -51,6 +51,12 @@ class EmbeddingProfileTests(unittest.TestCase):
         migration = Path(
             "infra/db/migrations/055_embedding_profile_hnsw_isolation.sql"
         ).read_text(encoding="utf-8")
+        generation_migration = Path(
+            "infra/db/migrations/056_generation_aware_embedding_serving.sql"
+        ).read_text(encoding="utf-8")
+        insertion_fence = Path(
+            "infra/db/migrations/057_embedding_generation_insert_fence.sql"
+        ).read_text(encoding="utf-8")
 
         for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
             literal = serving_embedding_profile_sql_literal(identifier)
@@ -58,6 +64,10 @@ class EmbeddingProfileTests(unittest.TestCase):
             self.assertEqual(
                 migration.count(f"embedding_profile = {literal}"),
                 2,
+            )
+            self.assertEqual(
+                generation_migration.count(f"embedding_profile = {literal}"),
+                1,
             )
         for value in (
             LEGACY_EMBEDDING_PROFILE.identifier,
@@ -69,6 +79,15 @@ class EmbeddingProfileTests(unittest.TestCase):
         self.assertIn("DROP INDEX IF EXISTS idx_chunks_embedding", migration)
         self.assertIn("DROP INDEX IF EXISTS idx_memories_embedding", migration)
         self.assertIn("DROP INDEX IF EXISTS idx_semantic_cache_embedding", migration)
+        self.assertIn("is_serving = true", generation_migration)
+        self.assertIn(
+            "trg_sync_chunk_embedding_vector_serving_state",
+            generation_migration,
+        )
+        self.assertIn(
+            "TG_OP = 'INSERT' AND generation_status <> 'building'",
+            insertion_fence,
+        )
 
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):

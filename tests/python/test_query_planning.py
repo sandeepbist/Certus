@@ -541,6 +541,7 @@ class QueryPlanningTests(unittest.TestCase):
             "embedding-space:v1:local:local-lexical-v2:1536"
         )
         cursor = MagicMock()
+        cursor.fetchone.return_value = None
         cursor.fetchall.side_effect = [[], [], []]
         connection = MagicMock()
         connection.cursor.return_value.__enter__.return_value = cursor
@@ -595,6 +596,48 @@ class QueryPlanningTests(unittest.TestCase):
         self.assertNotIn(" ILIKE ", full_text_sql)
         self.assertIn(" ILIKE %s ESCAPE", phrase_sql)
         self.assertNotIn(" OR ", phrase_sql)
+
+    def test_hybrid_search_switches_to_the_locked_active_generation(self):
+        generation_id = "22222222-2222-4222-8222-222222222222"
+        embedding = MagicMock()
+        embedding.vector = [0.1, 0.2]
+        embedding.profile.identifier = (
+            "embedding-space:v1:local:local-lexical-v2:1536"
+        )
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"id": generation_id}
+        cursor.fetchall.side_effect = [[], [], []]
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+
+        with patch.object(hybrid_module, "get_db_connection") as get_connection:
+            get_connection.return_value.__enter__.return_value = connection
+            results = hybrid_module.HybridSearchEngine.search(
+                "find proof",
+                "tenant",
+                "user",
+                query_embedding=embedding,
+                allow_embedding_generation=False,
+            )
+
+        self.assertEqual(results, [])
+        lookup_call = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "FROM workspace_embedding_generations" in call.args[0]
+        )
+        self.assertIn("FOR SHARE", lookup_call.args[0])
+        semantic_call = next(
+            call
+            for call in cursor.execute.call_args_list
+            if "WITH nearest AS MATERIALIZED" in call.args[0]
+        )
+        self.assertIn(
+            "FROM chunk_embedding_vectors AS candidate_vector",
+            semantic_call.args[0],
+        )
+        self.assertIn("candidate_vector.is_serving = true", semantic_call.args[0])
+        self.assertIn(generation_id, semantic_call.args[1])
 
     def test_literal_phrase_escapes_user_wildcards(self):
         queries = hybrid_module.build_document_lexical_queries(

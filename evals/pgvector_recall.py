@@ -143,6 +143,32 @@ def _contains_index_scan(plan: Any, index_name: str) -> bool:
     return False
 
 
+def _plan_index_names(plan: Any) -> list[str]:
+    names: set[str] = set()
+    if isinstance(plan, dict):
+        if isinstance(plan.get("Index Name"), str):
+            names.add(plan["Index Name"])
+        for value in plan.values():
+            names.update(_plan_index_names(value))
+    elif isinstance(plan, list):
+        for value in plan:
+            names.update(_plan_index_names(value))
+    return sorted(names)
+
+
+def _plan_node_types(plan: Any) -> list[str]:
+    names: set[str] = set()
+    if isinstance(plan, dict):
+        if isinstance(plan.get("Node Type"), str):
+            names.add(plan["Node Type"])
+        for value in plan.values():
+            names.update(_plan_node_types(value))
+    elif isinstance(plan, list):
+        for value in plan:
+            names.update(_plan_node_types(value))
+    return sorted(names)
+
+
 def _build_rows_and_cases() -> tuple[list[tuple[Any, ...]], list[QueryCase]]:
     rng = random.Random(20260830)
     rows: list[tuple[Any, ...]] = []
@@ -363,7 +389,7 @@ def _fixture_uuid(kind: str, identifier: int) -> str:
 def _create_joined_production_fixture(
     cursor: Any,
     rows: Sequence[tuple[Any, ...]],
-) -> None:
+) -> str:
     cursor.execute("""
         CREATE TEMP TABLE documents (
             id UUID PRIMARY KEY,
@@ -412,6 +438,24 @@ def _create_joined_production_fixture(
             search_vector tsvector GENERATED ALWAYS AS (
                 to_tsvector('english', content)
             ) STORED
+        ) ON COMMIT DROP;
+        CREATE TEMP TABLE workspace_embedding_generations (
+            id UUID PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            embedding_profile TEXT NOT NULL,
+            status TEXT NOT NULL
+        ) ON COMMIT DROP;
+        CREATE TEMP TABLE chunk_embedding_vectors (
+            generation_id UUID NOT NULL,
+            chunk_id INTEGER NOT NULL,
+            tenant_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            embedding_profile TEXT NOT NULL,
+            status TEXT NOT NULL,
+            is_serving BOOLEAN NOT NULL,
+            embedding vector(1536),
+            PRIMARY KEY (generation_id, chunk_id)
         ) ON COMMIT DROP
     """)
 
@@ -572,11 +616,63 @@ def _create_joined_production_fixture(
         ),
         page_size=50,
     )
+    target_generation_id = _fixture_uuid("embedding-generation", 1)
+    cursor.execute(
+        """
+        INSERT INTO workspace_embedding_generations (
+            id, tenant_id, user_id, embedding_profile, status
+        ) VALUES (%s, %s, %s, %s, 'active')
+        """,
+        (
+            target_generation_id,
+            target_row[1],
+            target_row[2],
+            LOCAL_EMBEDDING_PROFILE.identifier,
+        ),
+    )
+    cursor.execute(
+        """
+        INSERT INTO chunk_embedding_vectors (
+            generation_id, chunk_id, tenant_id, user_id,
+            embedding_profile, status, is_serving, embedding
+        )
+        SELECT %s::uuid, chunk.id, chunk.tenant_id, chunk.user_id,
+               %s, 'embedded', true, chunk.embedding
+        FROM chunks AS chunk
+        JOIN documents AS document ON document.id = chunk.document_id
+        JOIN document_versions AS version
+          ON version.id = chunk.document_version_id
+         AND version.document_id = chunk.document_id
+        WHERE chunk.tenant_id = %s
+          AND chunk.user_id = %s
+          AND chunk.embedding_profile = %s
+          AND chunk.embedding IS NOT NULL
+          AND document.deleted_at IS NULL
+          AND version.status = 'ready'
+          AND chunk.derivation_id = version.current_derivation_id
+        """,
+        (
+            target_generation_id,
+            LOCAL_EMBEDDING_PROFILE.identifier,
+            target_row[1],
+            target_row[2],
+            LOCAL_EMBEDDING_PROFILE.identifier,
+        ),
+    )
     cursor.execute("""
         CREATE INDEX certus_joined_chunks_hnsw_local
         ON chunks USING hnsw (embedding vector_cosine_ops)
         WITH (m = 16, ef_construction = 200)
         WHERE embedding IS NOT NULL
+          AND embedding_profile = 'embedding-space:v1:local:local-lexical-v2:1536'
+    """)
+    cursor.execute("""
+        CREATE INDEX certus_joined_generation_hnsw_local
+        ON chunk_embedding_vectors USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 200)
+        WHERE status = 'embedded'
+          AND is_serving = true
+          AND embedding IS NOT NULL
           AND embedding_profile = 'embedding-space:v1:local:local-lexical-v2:1536'
     """)
     cursor.execute("""
@@ -587,14 +683,17 @@ def _create_joined_production_fixture(
     cursor.execute("ANALYZE document_versions")
     cursor.execute("ANALYZE document_derivations")
     cursor.execute("ANALYZE chunks")
+    cursor.execute("ANALYZE workspace_embedding_generations")
+    cursor.execute("ANALYZE chunk_embedding_vectors")
+    return target_generation_id
 
 
 def _run_joined_production_cases(
     cursor: Any,
     rows: Sequence[tuple[Any, ...]],
     cases: Sequence[QueryCase],
-) -> list[dict[str, Any]]:
-    _create_joined_production_fixture(cursor, rows)
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    target_generation_id = _create_joined_production_fixture(cursor, rows)
     production_cases = [
         ProductionQueryCase(
             case_id=case.case_id,
@@ -904,7 +1003,90 @@ def _run_joined_production_cases(
                 ),
             },
         })
-    return reports
+    generation_query = build_document_semantic_query(
+        vector_literal=_vector_literal(target_case.vector),
+        tenant_id=target_case.scope.tenant_id,
+        user_id=target_case.scope.user_id,
+        embedding_profile=target_case.scope.embedding_profile,
+        embedding_generation_id=target_generation_id,
+        minimum_similarity=-1.0,
+        candidate_limit=target_case.requested_count,
+    )
+    _configure_exact(cursor)
+    cursor.execute(generation_query.sql, generation_query.params)
+    exact_rows = cursor.fetchall()
+    exact = [int(row[0]) for row in exact_rows]
+
+    _configure_approximate(cursor)
+    cursor.execute(generation_query.sql, generation_query.params)
+    approximate_rows = cursor.fetchall()
+    approximate = [int(row[0]) for row in approximate_rows]
+
+    _configure_approximate(cursor)
+    cursor.execute(
+        "EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) "
+        + generation_query.sql,
+        generation_query.params,
+    )
+    payload = cursor.fetchone()[0]
+    document = payload[0] if isinstance(payload, list) else payload
+    cursor.execute(
+        "SELECT COUNT(*) FROM chunk_embedding_vectors WHERE generation_id = %s",
+        (target_generation_id,),
+    )
+    generation_vector_count = int(cursor.fetchone()[0])
+    index_names = _plan_index_names(document)
+    node_types = _plan_node_types(document)
+    generation_report = {
+        "case_id": "target-active-embedding-generation",
+        "requested_count": target_case.requested_count,
+        "exact_ranking": exact,
+        "ann_ranking": approximate,
+        "recall_at_20": round(recall_at_k(exact, approximate, 20), 6),
+        "complete": len(approximate) == len(exact),
+        "eligible_count": len(exact),
+        "document_filter_count": 0,
+        "title_filter_count": 0,
+        "temporal_years": [],
+        "temporal_year_start": None,
+        "temporal_year_end": None,
+        "temporal_time_start": None,
+        "temporal_time_end": None,
+        "temporal_authority": "effective",
+        "version_scope": "all",
+        "serving_source": "active_embedding_generation",
+        "embedding_generation_id": target_generation_id,
+        "generation_vector_count": generation_vector_count,
+        "generation_bound": bool(approximate_rows) and all(
+            str(row[3]) == target_generation_id for row in approximate_rows
+        ),
+        "ann_plan": {
+            "uses_hnsw": _contains_index_scan(
+                document,
+                "certus_joined_generation_hnsw_local",
+            ),
+            "uses_generation_scope_index": (
+                "chunk_embedding_vectors_pkey" in index_names
+            ),
+            "uses_exact_sort": "Sort" in node_types,
+            "bounded_exact": (
+                generation_vector_count <= 256
+                and "chunk_embedding_vectors_pkey" in index_names
+                and "Sort" in node_types
+            ),
+            "index_names": index_names,
+            "node_types": node_types,
+            "planning_time_ms": round(
+                float(document.get("Planning Time", 0.0)),
+                6,
+            ),
+            "execution_time_ms": round(
+                float(document.get("Execution Time", 0.0)),
+                6,
+            ),
+        },
+    }
+    return reports, [generation_report]
 
 
 def _run_joined_lexical_case(cursor: Any, target_scope: Scope) -> dict[str, Any]:
@@ -1339,7 +1521,10 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
                 float(report["ann_latency_ms"]) for report in reports
             ), 6)
 
-            production_query_reports = _run_joined_production_cases(
+            (
+                production_query_reports,
+                generation_query_reports,
+            ) = _run_joined_production_cases(
                 cursor,
                 rows,
                 cases,
@@ -1358,11 +1543,15 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
                 1.0 if report["ann_plan"]["uses_hnsw"] else 0.0
                 for report in production_query_reports
             ), 6)
+            aggregate["generation_query_minimum_recall_at_20"] = min(
+                float(report["recall_at_20"])
+                for report in generation_query_reports
+            )
 
             return {
-                "schema_version": 12,
+                "schema_version": 13,
                 "run": {
-                    "runner_id": "certus-filtered-pgvector-recall-v12",
+                    "runner_id": "certus-filtered-pgvector-recall-v13",
                     "provider_calls": 0,
                     "persistent_rows_written": 0,
                     "random_seed": 20260830,
@@ -1372,6 +1561,7 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
                     "case_count": len(cases),
                     "hnsw": {
                         "profile_isolation": "partial_hnsw_per_supported_profile",
+                        "generation_serving": "active_vectors_only",
                         "iterative_scan": "strict_order",
                         "m": 16,
                         "ef_construction": 200,
@@ -1383,6 +1573,7 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
                 "aggregate": aggregate,
                 "cases": reports,
                 "production_query_cases": production_query_reports,
+                "generation_query_cases": generation_query_reports,
                 "lexical_query_cases": [lexical_query_report],
                 "seed_corpus": seed_corpus_report,
             }
@@ -1529,6 +1720,35 @@ def check_pgvector_report(
             != "partial_hnsw_per_supported_profile"
         ):
             failures.append("Production HNSW profile isolation was not declared")
+    if int(report.get("schema_version", 0)) >= 13:
+        generation_cases = report.get("generation_query_cases", [])
+        by_id = {str(case.get("case_id")): case for case in generation_cases}
+        generation_case = by_id.get("target-active-embedding-generation", {})
+        if (
+            generation_case.get("serving_source")
+            != "active_embedding_generation"
+            or generation_case.get("generation_bound") is not True
+        ):
+            failures.append(
+                "Generation query did not prove active-generation serving"
+            )
+        if float(generation_case.get("recall_at_20", 0.0)) < minimum_recall:
+            failures.append("Active-generation retrieval recall regressed")
+        if generation_case.get("complete") is not True:
+            failures.append("Active-generation retrieval was incomplete")
+        generation_plan = generation_case.get("ann_plan", {})
+        if not (
+            generation_plan.get("uses_hnsw") is True
+            or generation_plan.get("bounded_exact") is True
+        ):
+            failures.append(
+                "Active-generation retrieval used neither HNSW nor bounded exact search"
+            )
+        if (
+            report.get("run", {}).get("hnsw", {}).get("generation_serving")
+            != "active_vectors_only"
+        ):
+            failures.append("Production HNSW generation serving was not declared")
     lexical_cases = report.get("lexical_query_cases", [])
     for case in lexical_cases:
         if not case.get("scope_correct", False):

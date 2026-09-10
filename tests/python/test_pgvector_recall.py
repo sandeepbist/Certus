@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from services.shared.document_retrieval import (
+    build_active_embedding_generation_query,
     build_document_lexical_queries,
     build_document_semantic_query,
 )
@@ -172,6 +173,54 @@ class PgvectorRecallMetricTests(unittest.TestCase):
         self.assertIn("candidate.source_time < %s::timestamptz", dated_as_of.sql)
         self.assertIn(day_end, dated_as_of.params)
         self.assertNotIn("EXTRACT(YEAR", dated_as_of.sql)
+
+    def test_active_generation_query_uses_only_serving_shadow_vectors(self):
+        generation_id = "11111111-1111-4111-8111-111111111111"
+        lookup = build_active_embedding_generation_query(
+            tenant_id="tenant",
+            user_id="user",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+        )
+        self.assertIn("status = 'active'", lookup.sql)
+        self.assertIn(
+            "embedding_profile = "
+            "'embedding-space:v1:local:local-lexical-v2:1536'",
+            lookup.sql,
+        )
+        self.assertIn("FOR SHARE", lookup.sql)
+        self.assertEqual(lookup.params, ("tenant", "user"))
+
+        query = build_document_semantic_query(
+            vector_literal="[1,0]",
+            tenant_id="tenant",
+            user_id="user",
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            embedding_generation_id=generation_id,
+            minimum_similarity=0.3,
+        )
+        cte, outer = query.sql.split(")\n        SELECT", maxsplit=1)
+        self.assertIn("FROM chunk_embedding_vectors AS candidate_vector", cte)
+        self.assertIn("embedding_generation.status = 'active'", cte)
+        self.assertIn("candidate_vector.status = 'embedded'", cte)
+        self.assertIn("candidate_vector.is_serving = true", cte)
+        self.assertIn(
+            "candidate_vector.embedding_profile = "
+            "'embedding-space:v1:local:local-lexical-v2:1536'",
+            cte,
+        )
+        self.assertIn("candidate_vector.embedding <=> %s::vector", cte)
+        self.assertIn(generation_id, query.params)
+        self.assertIn("embedding_generation_id", outer)
+
+        with self.assertRaises(ValueError):
+            build_document_semantic_query(
+                vector_literal="[1,0]",
+                tenant_id="tenant",
+                user_id="user",
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+                embedding_generation_id="not-a-uuid",
+                minimum_similarity=0.3,
+            )
 
     def test_runtime_and_evaluator_share_one_bounded_hnsw_policy(self):
         class Cursor:
@@ -544,6 +593,64 @@ class PgvectorRecallMetricTests(unittest.TestCase):
                 f"Joined production queries did not prove exact instant scope: {case_id}",
                 failures,
             )
+
+    def test_schema_v13_report_requires_generation_bound_serving(self):
+        report = {
+            "schema_version": 13,
+            "run": {
+                "hnsw": {
+                    "profile_isolation": "partial_hnsw_per_supported_profile",
+                    "generation_serving": "inactive_vectors_included",
+                }
+            },
+            "cases": [{
+                "case_id": "flat",
+                "recall_at_20": 1.0,
+                "complete": True,
+                "eligible_count": 20,
+                "ann_plan": {"uses_hnsw": True},
+            }],
+            "production_query_cases": [{
+                "case_id": "ordinary",
+                "recall_at_20": 1.0,
+                "complete": True,
+                "eligible_count": 20,
+                "ann_plan": {"uses_hnsw": True},
+            }],
+            "generation_query_cases": [{
+                "case_id": "target-active-embedding-generation",
+                "recall_at_20": 1.0,
+                "complete": True,
+                "eligible_count": 20,
+                "ann_plan": {"uses_hnsw": False, "bounded_exact": False},
+                "serving_source": "active_embedding_generation",
+                "generation_bound": False,
+            }],
+            "lexical_query_cases": [{
+                "case_id": "fts",
+                "scope_correct": True,
+                "fts_plan": {"uses_gin": True},
+            }],
+            "seed_corpus": {
+                "evidence_recall_at_5": 1.0,
+                "mrr_at_20": 0.95,
+                "conflict_complete_at_5": 1.0,
+            },
+        }
+
+        failures = check_pgvector_report(report)
+        self.assertIn(
+            "Generation query did not prove active-generation serving",
+            failures,
+        )
+        self.assertIn(
+            "Active-generation retrieval used neither HNSW nor bounded exact search",
+            failures,
+        )
+        self.assertIn(
+            "Production HNSW generation serving was not declared",
+            failures,
+        )
 
 
 if __name__ == "__main__":

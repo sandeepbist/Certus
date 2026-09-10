@@ -241,6 +241,11 @@ def build_evidence_manifest(
                 "is_current_version": bool(payload.get("is_current_version", False)),
                 "retrieval_method": str(payload.get("retrieval_method") or "unknown"),
                 "retrieval_score": payload.get("score"),
+                "embedding_generation_id": (
+                    str(payload["embedding_generation_id"])
+                    if payload.get("embedding_generation_id") is not None
+                    else None
+                ),
             }
         else:
             if len(content) > MAX_NON_DOCUMENT_SNAPSHOT_CHARS:

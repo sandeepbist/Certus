@@ -482,6 +482,11 @@ def researcher_node(state: AgentState) -> Dict[str, Any]:
             "shared_embedding_profile": (
                 query_embedding.profile.identifier if query_embedding else None
             ),
+            "active_embedding_generation_ids": sorted({
+                str(chunk["embedding_generation_id"])
+                for chunk in chunk_dicts
+                if chunk.get("embedding_generation_id") is not None
+            }),
             "embedding_latency_ms": embedding_latency_ms,
             "retrieval_latency_ms": retrieval_latency_ms,
             "embedding_error": embedding_error,

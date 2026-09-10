@@ -58,10 +58,19 @@ def main() -> int:
     else:
         nonempty = report["nonempty_workspace_lifecycle"]
         coverage = "skipped" if nonempty.get("skipped") else str(nonempty["chunk_count"])
+        serving_access = (
+            "skipped"
+            if nonempty.get("skipped")
+            else "hnsw"
+            if nonempty["serving_query_uses_hnsw"]
+            else "invalid"
+        )
         print(
             "embedding generation evaluation: "
             f"nonempty-chunks={coverage} "
-            "cutover=pass rollback=pass stale-fence=pass lease-owner=pass "
+            f"serving-access={serving_access} "
+            "cutover=pass vector-cutover=pass rollback=pass "
+            "stale-fence=pass lease-owner=pass "
             "persistent-rows=0 provider-calls=0"
         )
     for failure in failures:
