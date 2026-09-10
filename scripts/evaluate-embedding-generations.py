@@ -65,12 +65,17 @@ def main() -> int:
             if nonempty["serving_query_uses_hnsw"]
             else "invalid"
         )
+        worker_dispatch = "skipped" if nonempty.get("skipped") else "pass"
+        attempt_ceiling = "skipped" if nonempty.get("skipped") else "pass"
+        nonempty_contract = "skipped" if nonempty.get("skipped") else "pass"
         print(
             "embedding generation evaluation: "
             f"nonempty-chunks={coverage} "
             f"serving-access={serving_access} "
-            "cutover=pass vector-cutover=pass rollback=pass "
-            "stale-fence=pass lease-owner=pass "
+            f"worker-dispatch={worker_dispatch} "
+            f"attempt-ceiling={attempt_ceiling} "
+            f"cutover=pass vector-cutover={nonempty_contract} rollback=pass "
+            f"stale-fence=pass lease-owner={nonempty_contract} "
             "persistent-rows=0 provider-calls=0"
         )
     for failure in failures:

@@ -26,6 +26,12 @@ from services.shared.embeddings import (
     local_lexical_embedding,
     parse_embedding_profile,
 )
+from services.shared.embedding_generation_worker import (
+    EmbeddingGenerationLeaseLostError,
+    claim_next_embedding_generation_batch,
+    record_embedding_generation_batch,
+    record_embedding_generation_failure,
+)
 from services.shared.worker_runtime import (
     WorkerIdentity,
     bounded_int_env,
@@ -55,6 +61,21 @@ PENDING_IDLE_MS = 60_000
 EMBEDDING_DLQ_MAX_LENGTH = int(os.getenv("EMBEDDING_DLQ_MAX_LENGTH", "1000"))
 EMBEDDING_PROCESSING_LEASE_SECONDS = int(
     os.getenv("EMBEDDING_PROCESSING_LEASE_SECONDS", "300")
+)
+EMBEDDING_GENERATION_BATCH_SIZE = bounded_int_env(
+    "EMBEDDING_GENERATION_BATCH_SIZE", 20, 1, 100
+)
+EMBEDDING_GENERATION_LEASE_SECONDS = bounded_int_env(
+    "EMBEDDING_GENERATION_LEASE_SECONDS", 300, 60, 3_600
+)
+EMBEDDING_GENERATION_MAX_ATTEMPTS = bounded_int_env(
+    "EMBEDDING_GENERATION_MAX_ATTEMPTS", 5, 1, 20
+)
+EMBEDDING_GENERATION_RETRY_BASE_SECONDS = bounded_int_env(
+    "EMBEDDING_GENERATION_RETRY_BASE_SECONDS", 30, 1, 3_600
+)
+EMBEDDING_GENERATION_RETRY_MAX_SECONDS = bounded_int_env(
+    "EMBEDDING_GENERATION_RETRY_MAX_SECONDS", 3_600, 1, 86_400
 )
 DATABASE_CONNECT_TIMEOUT_SECONDS = bounded_int_env(
     "EMBEDDING_DB_CONNECT_TIMEOUT_SECONDS", 3, 1, 30
@@ -90,6 +111,11 @@ if not 100 <= EMBEDDING_DLQ_MAX_LENGTH <= 100_000:
     raise ValueError("EMBEDDING_DLQ_MAX_LENGTH must be between 100 and 100000")
 if not 60 <= EMBEDDING_PROCESSING_LEASE_SECONDS <= 3_600:
     raise ValueError("EMBEDDING_PROCESSING_LEASE_SECONDS must be between 60 and 3600")
+if EMBEDDING_GENERATION_RETRY_MAX_SECONDS < EMBEDDING_GENERATION_RETRY_BASE_SECONDS:
+    raise ValueError(
+        "EMBEDDING_GENERATION_RETRY_MAX_SECONDS must be at least the retry base"
+    )
+
 
 class EmbeddingProfileMismatchError(RuntimeError):
     """A durable job targets a vector space this worker cannot produce."""
@@ -1126,6 +1152,105 @@ def process_message(conn, redis_client, message_id: str, fields: dict):
     return conn
 
 
+def process_one_embedding_generation_batch(conn) -> bool:
+    """Process at most one fair, profile-compatible PostgreSQL generation batch."""
+    lease_owner = str(uuid.uuid4())
+    try:
+        with conn.cursor() as cursor:
+            candidates = claim_next_embedding_generation_batch(
+                cursor,
+                embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
+                lease_owner=lease_owner,
+                batch_size=EMBEDDING_GENERATION_BATCH_SIZE,
+                lease_seconds=EMBEDDING_GENERATION_LEASE_SECONDS,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    if not candidates:
+        return False
+
+    generation_id = candidates[0].generation_id
+    try:
+        embeddings, provider_model = get_embeddings(
+            [candidate.embedding_input for candidate in candidates],
+            ACTIVE_EMBEDDING_PROFILE.identifier,
+        )
+    except Exception as error:
+        error_message = str(error).strip() or type(error).__name__
+        retry_exponent = min(
+            EMBEDDING_GENERATION_MAX_ATTEMPTS - 1,
+            max(candidate.attempt_count - 1 for candidate in candidates),
+        )
+        retry_delay = min(
+            EMBEDDING_GENERATION_RETRY_MAX_SECONDS,
+            EMBEDDING_GENERATION_RETRY_BASE_SECONDS
+            * (2 ** retry_exponent),
+        )
+        try:
+            with conn.cursor() as cursor:
+                exhausted = record_embedding_generation_failure(
+                    cursor,
+                    candidates=candidates,
+                    lease_owner=lease_owner,
+                    error_code="embedding_provider_error",
+                    error_message=error_message,
+                    retry_delay_seconds=retry_delay,
+                    max_attempts=EMBEDDING_GENERATION_MAX_ATTEMPTS,
+                )
+            conn.commit()
+        except EmbeddingGenerationLeaseLostError:
+            conn.rollback()
+            logger.info(
+                "Discarded stale provider failure for embedding generation %s",
+                generation_id,
+            )
+            return True
+        logger.error(
+            "Embedding generation %s batch failed; retry in %ss%s: %s",
+            generation_id,
+            retry_delay,
+            " and generation exhausted" if exhausted else "",
+            error_message,
+        )
+        return True
+
+    try:
+        with conn.cursor() as cursor:
+            record_embedding_generation_batch(
+                cursor,
+                candidates=candidates,
+                lease_owner=lease_owner,
+                embeddings=embeddings,
+                provider_metadata={
+                    "embedding_provider": ACTIVE_EMBEDDING_PROFILE.provider,
+                    "embedding_model_requested": ACTIVE_EMBEDDING_PROFILE.model,
+                    "embedding_model_returned": provider_model,
+                    "embedding_profile": ACTIVE_EMBEDDING_PROFILE.identifier,
+                },
+            )
+        conn.commit()
+    except EmbeddingGenerationLeaseLostError:
+        conn.rollback()
+        logger.info(
+            "Discarded stale provider result for embedding generation %s",
+            generation_id,
+        )
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+
+    logger.info(
+        "Embedded generation %s batch (%s candidates)",
+        generation_id,
+        len(candidates),
+    )
+    return True
+
+
 def claim_stale_messages(redis_client):
     claimed = redis_client.xautoclaim(
         STREAM_KEY,
@@ -1133,7 +1258,7 @@ def claim_stale_messages(redis_client):
         CONSUMER_NAME,
         min_idle_time=PENDING_IDLE_MS,
         start_id="0-0",
-        count=10,
+        count=1,
     )
     return claimed[1] if len(claimed) > 1 else []
 
@@ -1194,6 +1319,32 @@ def embedding_queue_metadata(conn) -> dict:
                 """
             )
             row = cursor.fetchone()
+            cursor.execute(
+                """
+                WITH bounded AS (
+                    SELECT expected_chunk_count, embedded_chunk_count,
+                           failed_chunk_count, created_at
+                    FROM workspace_embedding_generations
+                    WHERE status = 'building'
+                      AND embedding_profile = %s
+                    ORDER BY updated_at, id
+                    LIMIT 1001
+                )
+                SELECT LEAST(1000, COUNT(*)) AS generations,
+                       COUNT(*) > 1000 AS generations_capped,
+                       COALESCE(SUM(
+                           expected_chunk_count - embedded_chunk_count
+                       ), 0) AS outstanding,
+                       COALESCE(SUM(failed_chunk_count), 0) AS failed,
+                       COALESCE(
+                           EXTRACT(EPOCH FROM (NOW() - MIN(created_at))),
+                           0
+                       )::BIGINT AS oldest_outstanding_seconds
+                FROM bounded
+                """,
+                (ACTIVE_EMBEDDING_PROFILE.identifier,),
+            )
+            generation_row = cursor.fetchone()
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1206,6 +1357,15 @@ def embedding_queue_metadata(conn) -> dict:
             "failed_capped": bool(row["failed_capped"]),
             "oldest_outstanding_seconds": max(
                 0, int(row["oldest_outstanding_seconds"] or 0)
+            ),
+        },
+        "generation_queue": {
+            "generations": int(generation_row["generations"] or 0),
+            "generations_capped": bool(generation_row["generations_capped"]),
+            "outstanding": int(generation_row["outstanding"] or 0),
+            "failed": int(generation_row["failed"] or 0),
+            "oldest_outstanding_seconds": max(
+                0, int(generation_row["oldest_outstanding_seconds"] or 0)
             ),
         },
         "embedding_profile": ACTIVE_EMBEDDING_PROFILE.identifier,
@@ -1267,6 +1427,13 @@ def run_worker():
             "failed": 0,
             "oldest_outstanding_seconds": 0,
         },
+        "generation_queue": {
+            "generations": 0,
+            "generations_capped": False,
+            "outstanding": 0,
+            "failed": 0,
+            "oldest_outstanding_seconds": 0,
+        },
         "embedding_profile": ACTIVE_EMBEDDING_PROFILE.identifier,
     }
     try:
@@ -1277,7 +1444,9 @@ def run_worker():
             if "BUSYGROUP" not in str(error):
                 raise
 
-        logger.info("Listening for chunk embedding jobs on Redis Stream")
+        logger.info(
+            "Listening for document embedding jobs on Redis and generation leases in PostgreSQL"
+        )
         last_pending_claim_at = 0.0
         last_heartbeat_at = 0.0
 
@@ -1298,20 +1467,30 @@ def run_worker():
                     GROUP_NAME,
                     CONSUMER_NAME,
                     {STREAM_KEY: ">"},
-                    count=10,
-                    block=2000,
+                    count=1,
+                    block=500,
                 )
 
                 messages = list(stale_messages)
                 for _, stream_messages in entries:
                     messages.extend(stream_messages)
 
-                if not messages:
-                    STOP_REQUESTED.wait(0.5)
-                    continue
+                generation_worked = False
+                if messages:
+                    for message_id, fields in messages:
+                        conn = process_message(conn, r, message_id, fields)
+                        generation_worked = (
+                            process_one_embedding_generation_batch(conn)
+                            or generation_worked
+                        )
+                else:
+                    generation_worked = process_one_embedding_generation_batch(conn)
 
-                for message_id, fields in messages:
-                    conn = process_message(conn, r, message_id, fields)
+                # Alternating one durable generation batch with each Redis job
+                # prevents either queue from monopolizing this worker. When the
+                # Redis side is idle, one generation batch is still attempted.
+                if not messages and not generation_worked:
+                    STOP_REQUESTED.wait(0.5)
 
             except Exception as loop_error:
                 logger.error("Worker main loop error: %s", loop_error, exc_info=True)

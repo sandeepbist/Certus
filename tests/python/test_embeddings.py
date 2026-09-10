@@ -57,6 +57,9 @@ class EmbeddingProfileTests(unittest.TestCase):
         insertion_fence = Path(
             "infra/db/migrations/057_embedding_generation_insert_fence.sql"
         ).read_text(encoding="utf-8")
+        worker_dispatch = Path(
+            "infra/db/migrations/058_embedding_generation_worker_dispatch.sql"
+        ).read_text(encoding="utf-8")
 
         for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
             literal = serving_embedding_profile_sql_literal(identifier)
@@ -88,6 +91,11 @@ class EmbeddingProfileTests(unittest.TestCase):
             "TG_OP = 'INSERT' AND generation_status <> 'building'",
             insertion_fence,
         )
+        self.assertIn(
+            "idx_workspace_embedding_generation_worker_dispatch",
+            worker_dispatch,
+        )
+        self.assertIn("WHERE status = 'building'", worker_dispatch)
 
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):

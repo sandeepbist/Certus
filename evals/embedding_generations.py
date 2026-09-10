@@ -7,7 +7,15 @@ from typing import Any
 import psycopg2
 
 from services.shared.document_retrieval import build_document_semantic_query
-from services.shared.embeddings import LOCAL_EMBEDDING_PROFILE
+from services.shared.embedding_generation_worker import (
+    claim_next_embedding_generation_batch,
+    record_embedding_generation_batch,
+    record_embedding_generation_failure,
+)
+from services.shared.embeddings import (
+    LOCAL_EMBEDDING_PROFILE,
+    local_lexical_embedding,
+)
 from services.shared.pgvector_policy import configure_filtered_hnsw
 
 
@@ -26,8 +34,11 @@ APPROVED_REPORT = {
 
 def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    if report.get("schema", {}).get("latest_migration") != "057_embedding_generation_insert_fence.sql":
-        failures.append("migration 057 is not the active embedding-generation contract")
+    if (
+        report.get("schema", {}).get("latest_migration")
+        != "058_embedding_generation_worker_dispatch.sql"
+    ):
+        failures.append("migration 058 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -59,6 +70,10 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("rollback did not restore serving membership atomically")
         if nonempty.get("stale_removed_from_serving") is not True:
             failures.append("stale generation vectors remained in ANN serving")
+        if int(nonempty.get("worker_dispatch_batches", 0)) < 1:
+            failures.append("the generation worker scheduler did not dispatch a batch")
+        if nonempty.get("attempt_ceiling_failed_generation") is not True:
+            failures.append("the generation worker attempt ceiling did not fail closed")
     if report.get("run", {}).get("persistent_rows") != 0:
         failures.append("evaluation rows remained after rollback")
     if report.get("run", {}).get("provider_calls") != 0:
@@ -308,34 +323,35 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
         )
         replacement_generation_id = str(cursor.fetchone()[0])
         replacement_owner = str(uuid.uuid4())
+        worker_dispatch_batches = 0
         while True:
-            cursor.execute(
-                "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 100, 60)",
-                (replacement_generation_id, replacement_owner),
+            candidates = claim_next_embedding_generation_batch(
+                cursor,
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+                lease_owner=replacement_owner,
+                batch_size=100,
+                lease_seconds=60,
             )
-            chunk_ids = [str(row[0]) for row in cursor.fetchall()]
-            if not chunk_ids:
+            if not candidates:
                 break
-            for chunk_id in chunk_ids:
-                cursor.execute(
-                    "SELECT embedding::text FROM chunks WHERE id = %s",
-                    (chunk_id,),
+            if any(
+                candidate.generation_id != replacement_generation_id
+                for candidate in candidates
+            ):
+                raise EmbeddingGenerationEvaluationError(
+                    "worker scheduler crossed embedding generations"
                 )
-                vector = str(cursor.fetchone()[0])
-                cursor.execute(
-                    "SELECT record_chunk_embedding_vector(%s, %s, %s, %s::vector, %s::jsonb)",
-                    (
-                        replacement_generation_id,
-                        chunk_id,
-                        replacement_owner,
-                        vector,
-                        '{"control_plane_replacement":true}',
-                    ),
-                )
-                if not cursor.fetchone()[0]:
-                    raise EmbeddingGenerationEvaluationError(
-                        "replacement generation vector was not committed"
-                    )
+            worker_dispatch_batches += 1
+            record_embedding_generation_batch(
+                cursor,
+                candidates=candidates,
+                lease_owner=replacement_owner,
+                embeddings=[
+                    local_lexical_embedding(candidate.embedding_input)
+                    for candidate in candidates
+                ],
+                provider_metadata={"worker_dispatch_probe": True},
+            )
         if not _seal(cursor, replacement_generation_id):
             raise EmbeddingGenerationEvaluationError(
                 "complete replacement generation did not seal"
@@ -363,6 +379,43 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
         rollback_serving_counts = _serving_counts(
             cursor,
             [generation_id, replacement_generation_id],
+        )
+
+        cursor.execute(
+            "SELECT start_workspace_embedding_generation(%s, %s, %s)",
+            (tenant_id, user_id, LOCAL_EMBEDDING_PROFILE.identifier),
+        )
+        exhausted_generation_id = str(cursor.fetchone()[0])
+        exhausted_owner = str(uuid.uuid4())
+        exhausted_candidates = claim_next_embedding_generation_batch(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            lease_owner=exhausted_owner,
+            batch_size=1,
+            lease_seconds=60,
+        )
+        if (
+            not exhausted_candidates
+            or exhausted_candidates[0].generation_id != exhausted_generation_id
+        ):
+            raise EmbeddingGenerationEvaluationError(
+                "worker scheduler did not claim the exhaustion probe"
+            )
+        attempt_ceiling_triggered = record_embedding_generation_failure(
+            cursor,
+            candidates=exhausted_candidates,
+            lease_owner=exhausted_owner,
+            error_code="evaluation_failure",
+            error_message="intentional worker attempt-ceiling probe",
+            retry_delay_seconds=0,
+            max_attempts=1,
+        )
+        cursor.execute(
+            "SELECT status FROM workspace_embedding_generations WHERE id = %s",
+            (exhausted_generation_id,),
+        )
+        attempt_ceiling_failed_generation = (
+            attempt_ceiling_triggered and cursor.fetchone()[0] == "failed"
         )
 
         semantic_query = build_document_semantic_query(
@@ -418,6 +471,8 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
                 str(row[3]) == generation_id for row in served_rows
             ),
             "stale_removed_from_serving": stale_serving_count == 0,
+            "worker_dispatch_batches": worker_dispatch_batches,
+            "attempt_ceiling_failed_generation": attempt_ceiling_failed_generation,
         }
     finally:
         cursor.execute("ROLLBACK TO SAVEPOINT nonempty_generation_contract")
@@ -439,8 +494,8 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
                 "WHERE filename LIKE '%embedding%' ORDER BY filename"
             )
             migrations = [str(row[0]) for row in cursor.fetchall()]
-            if "057_embedding_generation_insert_fence.sql" not in migrations:
-                raise EmbeddingGenerationEvaluationError("migration 057 is not applied")
+            if "058_embedding_generation_worker_dispatch.sql" not in migrations:
+                raise EmbeddingGenerationEvaluationError("migration 058 is not applied")
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
             )
@@ -456,7 +511,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "057_embedding_generation_insert_fence.sql",
+                "latest_migration": "058_embedding_generation_worker_dispatch.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,
