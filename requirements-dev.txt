@@ -1,0 +1,7 @@
+# One local virtual environment runs all Python application services. Service
+# Docker images continue to install only their own requirement set.
+-r services/ingestion/requirements.txt
+-r services/embedding/requirements.txt
+-r services/orchestration/requirements.txt
+-r services/mcp-tools/requirements.txt
+-r services/workflows/requirements.txt

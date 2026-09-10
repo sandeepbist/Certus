@@ -1,0 +1,63 @@
+# === Dependencies ===
+node_modules/
+.pnp
+.pnp.js
+bun.lockb
+
+# === Build outputs ===
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# === Environment ===
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.eggs/
+
+# === Docker ===
+docker-volumes/
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# === Testing ===
+coverage/
+.nyc_output/
+.pytest_cache/
+output/
+.playwright-cli/
+
+# === Misc ===
+*.pid
+*.seed
+*.pid.lock
+.cache/

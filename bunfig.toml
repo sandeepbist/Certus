@@ -1,0 +1,4 @@
+[install]
+# Use hoisted linker for compatibility with tools that expect node_modules
+# at the root level (e.g., Docker builds, some IDE integrations)
+linker = "hoisted"

@@ -1,0 +1,8 @@
+fastapi>=0.141.1,<1
+uvicorn>=0.52.4,<1
+pydantic>=2.13.4,<3
+python-dotenv>=1.2.3,<2
+psycopg2-binary>=2.9.12,<3
+neo4j>=6.3.0,<7
+temporalio==1.31.0
+mcp==2.0.0

@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "dataset_id": "certus-seed",
+  "dataset_version": "1.1.0",
+  "manifest_sha256": "857b8e395d075001ab38f47b5ad59d7c40b8928eeafbfbbaa2a6b183026f62ee",
+  "run_fingerprint": "e6133b67f1637b9e2f8d02126d483cabdc6360dca27147c6e884ef9727e8b79f",
+  "known_gaps": [
+    "The seed hybrid returns candidates for the no-answer budget query, so no_answer_empty_rate is currently 0.0; claim-level abstention remains a P0 gap.",
+    "The offline lexical arm is deterministic token overlap, not the PostgreSQL FTS execution path.",
+    "The seed table case evaluates text retrieval only; it does not yet exercise typed cells, formula execution, or cell-region citations.",
+    "The seed has no OCR, visual-layout, multilingual, private holdout, or human-annotator agreement cohorts yet."
+  ],
+  "gates": [
+    {
+      "metric": "dataset.document_count",
+      "operator": "==",
+      "value": 14
+    },
+    {
+      "metric": "dataset.query_count",
+      "operator": "==",
+      "value": 11
+    },
+    {
+      "metric": "run.provider_calls",
+      "operator": "==",
+      "value": 0
+    },
+    {
+      "metric": "methods.dense_exact.aggregate.answerable_evidence_recall_at_5",
+      "operator": ">=",
+      "value": 1.0
+    },
+    {
+      "metric": "methods.hybrid_rrf.aggregate.answerable_evidence_recall_at_1",
+      "operator": ">=",
+      "value": 0.85
+    },
+    {
+      "metric": "methods.hybrid_rrf.aggregate.answerable_evidence_recall_at_5",
+      "operator": ">=",
+      "value": 1.0
+    },
+    {
+      "metric": "methods.hybrid_rrf.aggregate.answerable_mrr_at_20",
+      "operator": ">=",
+      "value": 0.9
+    },
+    {
+      "metric": "methods.hybrid_rrf.aggregate.answerable_ndcg_at_5",
+      "operator": ">=",
+      "value": 0.95
+    },
+    {
+      "metric": "methods.hybrid_rrf.aggregate.multi_evidence_complete_at_5",
+      "operator": ">=",
+      "value": 1.0
+    },
+    {
+      "metric": "methods.hybrid_rrf.aggregate.conflicting_evidence_complete_at_5",
+      "operator": ">=",
+      "value": 1.0
+    },
+    {
+      "metric": "corpus.estimated_total_index_payload_bytes",
+      "operator": "<=",
+      "value": 100000
+    }
+  ]
+}

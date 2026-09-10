@@ -1,0 +1,42 @@
+{
+  "name": "certus",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Evidence-first workspace intelligence for long-lived document collections",
+  "workspaces": [
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "bash scripts/dev-services.sh",
+    "dev:web": "bun run --filter web dev",
+    "dev:gateway": "bun run --filter gateway dev",
+    "build": "bun run --filter '*' build",
+    "build:web": "bun run --filter web build",
+    "build:gateway": "bun run --filter gateway build",
+    "lint": "eslint services/gateway/src services/web/src scripts tests",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test tests/unit",
+    "test:python": "bash scripts/check-python.sh",
+    "check:python": "bash scripts/check-python.sh",
+    "eval:retrieval": "python3 scripts/evaluate-retrieval.py --check",
+    "eval:pgvector": "bash scripts/evaluate-pgvector-recall.sh --check",
+    "eval:embedding-generations": "bash scripts/evaluate-embedding-generations.sh --check",
+    "check": "bun run lint && bun run typecheck && bun run test && bun run check:python && bun run eval:retrieval",
+    "smoke": "bun run scripts/smoke-local.ts",
+    "clean": "bash scripts/clean-generated.sh",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "db:migrate": "bash scripts/migrate-db.sh",
+    "graph:migrate": "bash scripts/migrate-neo4j.sh",
+    "setup": "bash scripts/setup-dev.sh"
+  },
+  "author": "Certus contributors",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/eslintrc": "3.3.6",
+    "eslint": "9.39.5",
+    "eslint-config-next": "15.5.23",
+    "typescript-eslint": "8.67.0"
+  }
+}

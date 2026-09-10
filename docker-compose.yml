@@ -1,0 +1,142 @@
+services:
+  # ============================================================
+  # PostgreSQL 17 with pgvector 0.8.x extension
+  # ============================================================
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: nexus-postgres
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-nexus}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # ============================================================
+  # Neo4j 5.x Graph Database
+  # ============================================================
+  neo4j:
+    image: neo4j:5-community
+    container_name: nexus-neo4j
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-nexus_neo4j_dev}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    volumes:
+      - neo4jdata:/data
+
+  # ============================================================
+  # Redis 7.x Cache & Streams
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis
+    restart: unless-stopped
+    network_mode: host
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+
+  # ============================================================
+  # RustFS S3-compatible object storage (isolated local use only)
+  # ============================================================
+  object-storage:
+    image: rustfs/rustfs:1.0.0-beta.12@sha256:41fe89380f4120a337790c02af192c3fe7bb55c3edc2e6e9357b487b47c6ab21
+    container_name: certus-object-storage
+    restart: unless-stopped
+    network_mode: host
+    command: ["/data"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      RUSTFS_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-certus-local-access-key}
+      RUSTFS_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-certus-local-secret-key-change-me}
+      RUSTFS_ADDRESS: 127.0.0.1:9000
+      RUSTFS_CONSOLE_ADDRESS: 127.0.0.1:9001
+    volumes:
+      - objectdata:/data
+    tmpfs:
+      - /logs:rw,noexec,nosuid,nodev,uid=10001,gid=10001,size=64m
+      - /tmp:rw,noexec,nosuid,nodev,uid=10001,gid=10001,size=64m
+
+  # ============================================================
+  # Temporal Server (Local Development Engine)
+  # ============================================================
+  temporal:
+    image: temporalio/temporal:1.8.2
+    container_name: nexus-temporal
+    restart: unless-stopped
+    network_mode: host
+    command:
+      [
+        "server", "start-dev",
+        "--ip", "0.0.0.0",
+        "--db-filename", "/home/temporal/temporal.db",
+        "--namespace", "${TEMPORAL_NAMESPACE:-nexus}"
+      ]
+    volumes:
+      - temporaldata:/home/temporal
+
+  # ============================================================
+  # Temporal workflow worker + automation event dispatcher
+  # ============================================================
+  workflows:
+    build:
+      context: .
+      dockerfile: services/workflows/Dockerfile
+      network: host
+    container_name: certus-workflows
+    restart: unless-stopped
+    stop_grace_period: 45s
+    network_mode: host
+    depends_on:
+      - postgres
+      - redis
+      - neo4j
+      - temporal
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://nexus:nexus_dev_password@localhost:5432/nexus}
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379}
+      NOTIFICATION_EVENT_RETENTION_DAYS: ${NOTIFICATION_EVENT_RETENTION_DAYS:-30}
+      REALTIME_EVENT_RETENTION_DAYS: ${REALTIME_EVENT_RETENTION_DAYS:-30}
+      AUTOMATION_EVENT_RETENTION_DAYS: ${AUTOMATION_EVENT_RETENTION_DAYS:-30}
+      OUTBOX_PUBLISHED_RECOVERY_SECONDS: ${OUTBOX_PUBLISHED_RECOVERY_SECONDS:-300}
+      EMBEDDING_JOB_RETENTION_DAYS: ${EMBEDDING_JOB_RETENTION_DAYS:-7}
+      EMBEDDING_PROCESSING_LEASE_SECONDS: ${EMBEDDING_PROCESSING_LEASE_SECONDS:-300}
+      WORKFLOWS_DB_CONNECT_TIMEOUT_SECONDS: ${WORKFLOWS_DB_CONNECT_TIMEOUT_SECONDS:-3}
+      WORKFLOWS_REDIS_CONNECT_TIMEOUT_SECONDS: ${WORKFLOWS_REDIS_CONNECT_TIMEOUT_SECONDS:-3}
+      WORKFLOWS_REDIS_SOCKET_TIMEOUT_SECONDS: ${WORKFLOWS_REDIS_SOCKET_TIMEOUT_SECONDS:-5}
+      WORKFLOWS_DEPENDENCY_CONNECT_TIMEOUT_SECONDS: ${WORKFLOWS_DEPENDENCY_CONNECT_TIMEOUT_SECONDS:-5}
+      WORKFLOWS_NEO4J_TIMEOUT_SECONDS: ${WORKFLOWS_NEO4J_TIMEOUT_SECONDS:-5}
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: ${WORKER_HEARTBEAT_INTERVAL_SECONDS:-10}
+      WORKER_DB_STATEMENT_TIMEOUT_MS: ${WORKER_DB_STATEMENT_TIMEOUT_MS:-15000}
+      WORKER_DB_LOCK_TIMEOUT_MS: ${WORKER_DB_LOCK_TIMEOUT_MS:-3000}
+      NEO4J_URI: ${NEO4J_URI:-bolt://localhost:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-nexus_neo4j_dev}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-localhost:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-nexus}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-certus-workflows}
+      NODE_ENV: ${NODE_ENV:-development}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
+      WEBHOOK_ALLOW_PRIVATE_TARGETS: ${WEBHOOK_ALLOW_PRIVATE_TARGETS:-false}
+
+volumes:
+  pgdata:
+    driver: local
+  neo4jdata:
+    driver: local
+  redisdata:
+    driver: local
+  temporaldata:
+    driver: local
+  objectdata:
+    driver: local
