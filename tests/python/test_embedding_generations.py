@@ -7,12 +7,12 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_complete_report_passes(self):
         report = {
             "schema": {
-                "latest_migration": "062_embedding_generation_scope_serialization.sql"
+                "latest_migration": "063_active_generation_delta_serving.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
-                "stale": ["stale", "stale"],
+                "stale": ["active", "stale"],
                 "forged_report_rejected": True,
             },
             "nonempty_workspace_lifecycle": {
@@ -27,7 +27,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "serving_membership_complete": True,
                 "cutover_serving_counts": [0, 2],
                 "rollback_serving_counts": [2, 0],
-                "stale_removed_from_serving": True,
+                "active_baseline_retained_after_corpus_change": True,
                 "chunk_count": 2,
                 "worker_dispatch_batches": 1,
                 "attempt_ceiling_failed_generation": True,
@@ -43,7 +43,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
             "empty_workspace_lifecycle": {
                 "cutover": ["active", "active"],
                 "rollback": ["retired", "active"],
-                "stale": ["active", "building"],
+                "stale": ["stale", "building"],
                 "forged_report_rejected": False,
             },
             "nonempty_workspace_lifecycle": {
@@ -58,7 +58,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "serving_membership_complete": False,
                 "cutover_serving_counts": [1, 1],
                 "rollback_serving_counts": [0, 2],
-                "stale_removed_from_serving": False,
+                "active_baseline_retained_after_corpus_change": False,
                 "chunk_count": 2,
                 "integrity_rejected_zero_vectors": False,
             },
@@ -70,12 +70,12 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_empty_database_may_skip_only_the_nonempty_probe(self):
         report = {
             "schema": {
-                "latest_migration": "062_embedding_generation_scope_serialization.sql"
+                "latest_migration": "063_active_generation_delta_serving.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
-                "stale": ["stale", "stale"],
+                "stale": ["active", "stale"],
                 "forged_report_rejected": True,
             },
             "nonempty_workspace_lifecycle": {"skipped": True},

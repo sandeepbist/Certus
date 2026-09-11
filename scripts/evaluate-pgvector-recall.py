@@ -70,6 +70,13 @@ def main() -> int:
             if generation_plan["bounded_exact"]
             else "invalid"
         )
+        delta_access = (
+            "hnsw"
+            if generation_plan["uses_delta_hnsw"]
+            else "bounded-exact"
+            if generation_plan["delta_bounded_exact"]
+            else "invalid"
+        )
         print(
             "pgvector filtered ANN evaluation: "
             f"version={report['run']['pgvector_version']} "
@@ -83,6 +90,7 @@ def main() -> int:
             "joined-hnsw="
             f"{aggregate['production_query_hnsw_plan_case_rate']:.3f} "
             f"generation-access={generation_access} "
+            f"delta-access={delta_access} "
             f"joined-fts-gin={int(report['lexical_query_cases'][0]['fts_plan']['uses_gin'])} "
             f"rrf-recall@5={report['seed_corpus']['evidence_recall_at_5']:.3f} "
             f"rrf-mrr@20={report['seed_corpus']['mrr_at_20']:.3f} "

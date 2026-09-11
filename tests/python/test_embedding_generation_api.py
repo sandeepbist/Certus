@@ -34,6 +34,7 @@ def generation_row() -> dict:
             "embedding-space:v1:local:local-lexical-v2:1536"
         ),
         "source_corpus_revision": 4,
+        "current_corpus_revision": 5,
         "status": "building",
         "expected_chunk_count": 10,
         "embedded_chunk_count": 7,
@@ -117,6 +118,7 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
         self.assertEqual(response["pagination"]["next_cursor"], str(GENERATION_ID))
         item = response["generations"][0]
         self.assertEqual(item["progress"]["remaining"], 3)
+        self.assertFalse(item["corpus"]["is_current"])
         self.assertTrue(item["has_error"])
         self.assertNotIn("last_error", item)
         self.assertNotIn("private_diagnostics", item["evaluation"])

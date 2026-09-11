@@ -630,13 +630,14 @@ class QueryPlanningTests(unittest.TestCase):
         semantic_call = next(
             call
             for call in cursor.execute.call_args_list
-            if "WITH nearest AS MATERIALIZED" in call.args[0]
+            if "WITH generation_nearest AS MATERIALIZED" in call.args[0]
         )
         self.assertIn(
             "FROM chunk_embedding_vectors AS candidate_vector",
             semantic_call.args[0],
         )
         self.assertIn("candidate_vector.is_serving = true", semantic_call.args[0])
+        self.assertIn("delta_nearest AS MATERIALIZED", semantic_call.args[0])
         self.assertIn(generation_id, semantic_call.args[1])
 
     def test_literal_phrase_escapes_user_wildcards(self):

@@ -28,16 +28,18 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if (
         report.get("schema", {}).get("latest_migration")
-        != "062_embedding_generation_scope_serialization.sql"
+        != "063_active_generation_delta_serving.sql"
     ):
-        failures.append("migration 062 is not the active embedding-generation contract")
+        failures.append("migration 063 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
     if lifecycle.get("rollback") != ["active", "rolled_back"]:
         failures.append("rollback did not restore the previous generation")
-    if lifecycle.get("stale") != ["stale", "stale"]:
-        failures.append("corpus invalidation did not stale active and building generations")
+    if lifecycle.get("stale") != ["active", "stale"]:
+        failures.append(
+            "corpus invalidation did not retain the active baseline and stale open work"
+        )
     if lifecycle.get("forged_report_rejected") is not True:
         failures.append("activation accepted a caller-authored evaluation report")
     nonempty = report.get("nonempty_workspace_lifecycle", {})
@@ -62,8 +64,8 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("cutover did not move serving membership atomically")
         if nonempty.get("rollback_serving_counts") != [nonempty.get("chunk_count"), 0]:
             failures.append("rollback did not restore serving membership atomically")
-        if nonempty.get("stale_removed_from_serving") is not True:
-            failures.append("stale generation vectors remained in ANN serving")
+        if nonempty.get("active_baseline_retained_after_corpus_change") is not True:
+            failures.append("corpus change removed the approved active ANN baseline")
         if int(nonempty.get("worker_dispatch_batches", 0)) < 1:
             failures.append("the generation worker scheduler did not dispatch a batch")
         if nonempty.get("attempt_ceiling_failed_generation") is not True:
@@ -525,7 +527,7 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             """,
             (generation_id,),
         )
-        stale_serving_count = int(cursor.fetchone()[0])
+        post_change_serving_count = int(cursor.fetchone()[0])
         return {
             "skipped": False,
             "chunk_count": expected,
@@ -544,7 +546,9 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             "served_generation_bound": bool(served_rows) and all(
                 str(row[3]) == generation_id for row in served_rows
             ),
-            "stale_removed_from_serving": stale_serving_count == 0,
+            "active_baseline_retained_after_corpus_change": (
+                post_change_serving_count == expected
+            ),
             "worker_dispatch_batches": worker_dispatch_batches,
             "attempt_ceiling_failed_generation": attempt_ceiling_failed_generation,
             "integrity_rejected_zero_vectors": integrity_rejected_zero_vectors,
@@ -565,17 +569,17 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         with connection.cursor() as cursor:
             cursor.execute("SET LOCAL statement_timeout = '60s'")
             cursor.execute(
-                "SELECT filename FROM schema_migrations "
-                "WHERE filename LIKE '%embedding%' ORDER BY filename"
+                "SELECT filename FROM schema_migrations ORDER BY filename"
             )
             migrations = [str(row[0]) for row in cursor.fetchall()]
             required_migrations = {
                 "061_trusted_embedding_generation_promotion.sql",
                 "062_embedding_generation_scope_serialization.sql",
+                "063_active_generation_delta_serving.sql",
             }
             if not required_migrations.issubset(migrations):
                 raise EmbeddingGenerationEvaluationError(
-                    "trusted promotion migrations 061 and 062 are not applied"
+                    "trusted promotion migrations 061 through 063 are not applied"
                 )
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
@@ -592,7 +596,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "062_embedding_generation_scope_serialization.sql",
+                "latest_migration": "063_active_generation_delta_serving.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,

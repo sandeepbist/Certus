@@ -68,6 +68,14 @@ def _generation_payload(row: Any) -> dict[str, Any]:
         "id": str(payload["id"]),
         "embedding_profile": payload["embedding_profile"],
         "source_corpus_revision": int(payload["source_corpus_revision"]),
+        "corpus": {
+            "snapshot_revision": int(payload["source_corpus_revision"]),
+            "current_revision": int(payload["current_corpus_revision"]),
+            "is_current": (
+                int(payload["source_corpus_revision"])
+                == int(payload["current_corpus_revision"])
+            ),
+        },
         "status": payload["status"],
         "progress": {
             "expected": expected,
@@ -98,7 +106,13 @@ GENERATION_SELECT = """
            expected_chunk_count, embedded_chunk_count, failed_chunk_count,
            previous_generation_id, evaluation_report, last_error,
            created_at, updated_at, sealed_at, activated_at, retired_at,
-           stale_at, rollback_until, retain_until
+           stale_at, rollback_until, retain_until,
+           COALESCE((
+               SELECT revision
+               FROM workspace_embedding_corpus_revisions AS corpus
+               WHERE corpus.tenant_id = workspace_embedding_generations.tenant_id
+                 AND corpus.user_id = workspace_embedding_generations.user_id
+           ), source_corpus_revision) AS current_corpus_revision
     FROM workspace_embedding_generations
 """
 
