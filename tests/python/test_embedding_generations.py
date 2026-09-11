@@ -6,11 +6,14 @@ from evals.embedding_generations import check_embedding_generation_report
 class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_complete_report_passes(self):
         report = {
-            "schema": {"latest_migration": "060_embedding_generation_retention.sql"},
+            "schema": {
+                "latest_migration": "062_embedding_generation_scope_serialization.sql"
+            },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
                 "stale": ["stale", "stale"],
+                "forged_report_rejected": True,
             },
             "nonempty_workspace_lifecycle": {
                 "skipped": False,
@@ -28,6 +31,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "chunk_count": 2,
                 "worker_dispatch_batches": 1,
                 "attempt_ceiling_failed_generation": True,
+                "integrity_rejected_zero_vectors": True,
             },
             "run": {"persistent_rows": 0, "provider_calls": 0},
         }
@@ -40,6 +44,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "cutover": ["active", "active"],
                 "rollback": ["retired", "active"],
                 "stale": ["active", "building"],
+                "forged_report_rejected": False,
             },
             "nonempty_workspace_lifecycle": {
                 "skipped": False,
@@ -55,19 +60,23 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "rollback_serving_counts": [0, 2],
                 "stale_removed_from_serving": False,
                 "chunk_count": 2,
+                "integrity_rejected_zero_vectors": False,
             },
             "run": {"persistent_rows": 1, "provider_calls": 1},
         }
         failures = check_embedding_generation_report(report)
-        self.assertEqual(len(failures), 19)
+        self.assertEqual(len(failures), 21)
 
     def test_empty_database_may_skip_only_the_nonempty_probe(self):
         report = {
-            "schema": {"latest_migration": "060_embedding_generation_retention.sql"},
+            "schema": {
+                "latest_migration": "062_embedding_generation_scope_serialization.sql"
+            },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
                 "stale": ["stale", "stale"],
+                "forged_report_rejected": True,
             },
             "nonempty_workspace_lifecycle": {"skipped": True},
             "run": {"persistent_rows": 0, "provider_calls": 0},

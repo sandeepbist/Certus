@@ -36,6 +36,47 @@ def _canonical_uuid(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} must be a valid UUID") from error
 
 
+def qualify_next_embedding_generation(
+    cursor: Any,
+    *,
+    embedding_profile: str,
+) -> str | None:
+    """Qualify one complete generation through the database-owned gate."""
+    profile = parse_embedding_profile(embedding_profile).identifier
+    cursor.execute(
+        """
+        SELECT id, tenant_id, user_id
+        FROM workspace_embedding_generations
+        WHERE status = 'building'
+          AND embedding_profile = %s
+          AND embedded_chunk_count = expected_chunk_count
+          AND failed_chunk_count = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM chunk_embedding_vectors AS candidate
+              WHERE candidate.generation_id = workspace_embedding_generations.id
+                AND candidate.status <> 'embedded'
+          )
+        ORDER BY updated_at, id
+        LIMIT 1
+        """,
+        (profile,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    generation_id = str(row[0])
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s || chr(31) || %s, 0))",
+        (str(row[1]), str(row[2])),
+    )
+    cursor.execute(
+        "SELECT qualify_workspace_embedding_generation(%s::uuid)",
+        (generation_id,),
+    )
+    return generation_id if bool(cursor.fetchone()[0]) else None
+
+
 def claim_next_embedding_generation_batch(
     cursor: Any,
     *,

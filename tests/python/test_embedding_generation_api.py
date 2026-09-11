@@ -40,10 +40,15 @@ def generation_row() -> dict:
         "failed_chunk_count": 1,
         "previous_generation_id": None,
         "evaluation_report": {
+            "schema_version": 2,
+            "evaluation_profile": "embedding_generation_integrity_v1",
+            "evaluation_source": "database_authoritative",
             "decision": "approved",
             "gates_passed": True,
+            "quality_claim": "not_evaluated",
             "baseline_fingerprint": "base",
             "candidate_fingerprint": "candidate",
+            "metrics": {"observed_chunk_count": 10},
             "private_diagnostics": "must-not-leak",
         },
         "last_error": "private provider diagnostic",
@@ -115,6 +120,7 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
         self.assertTrue(item["has_error"])
         self.assertNotIn("last_error", item)
         self.assertNotIn("private_diagnostics", item["evaluation"])
+        self.assertEqual(item["evaluation"]["quality_claim"], "not_evaluated")
         sql, params = cursor.statements[-1]
         self.assertIn("tenant_id = %s", sql)
         self.assertIn("user_id = %s", sql)
@@ -171,8 +177,40 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
                 identity=IDENTITY,
             )
         self.assertEqual(response["status"], "rolled_back")
-        self.assertIn("FOR UPDATE", active.statements[0][0])
-        self.assertIn("rollback_workspace_embedding_generation", active.statements[1][0])
+        self.assertIn("pg_advisory_xact_lock", active.statements[0][0])
+        self.assertIn("rollback_workspace_embedding_generation", active.statements[2][0])
+
+    def test_activation_requires_ready_scope_and_bounded_rollback_window(self):
+        cursor = FakeCursor(
+            fetchones=[{"status": "ready"}, {"activated": True}]
+        )
+        request = embedding_generations.ActivateEmbeddingGenerationRequest(
+            rollback_window_hours=72
+        )
+        with patch.object(
+            embedding_generations,
+            "get_db_cursor",
+            return_value=cursor_context(cursor),
+        ):
+            response = embedding_generations.activate_embedding_generation(
+                generation_id=GENERATION_ID,
+                request=request,
+                identity=IDENTITY,
+            )
+
+        self.assertEqual(response["status"], "active")
+        self.assertEqual(response["rollback_window_hours"], 72)
+        self.assertIn("pg_advisory_xact_lock", cursor.statements[0][0])
+        self.assertIn(
+            "activate_workspace_embedding_generation",
+            cursor.statements[2][0],
+        )
+        self.assertEqual(cursor.statements[2][1], (str(GENERATION_ID), 72))
+
+        with self.assertRaises(ValueError):
+            embedding_generations.ActivateEmbeddingGenerationRequest(
+                rollback_window_hours=721
+            )
 
 
 if __name__ == "__main__":

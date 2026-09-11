@@ -6,6 +6,7 @@ from services.shared.embedding_generation_worker import (
     EmbeddingGenerationCandidate,
     EmbeddingGenerationLeaseLostError,
     claim_next_embedding_generation_batch,
+    qualify_next_embedding_generation,
     record_embedding_generation_batch,
     record_embedding_generation_failure,
 )
@@ -29,6 +30,28 @@ def candidate(attempt_count: int = 1) -> EmbeddingGenerationCandidate:
 
 
 class EmbeddingGenerationWorkerPrimitiveTests(unittest.TestCase):
+    def test_qualification_selects_only_complete_profile_scoped_work(self):
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [
+            (GENERATION_ID, "tenant-proof", "user-proof"),
+            (True,),
+        ]
+
+        qualified = qualify_next_embedding_generation(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+        )
+
+        self.assertEqual(qualified, GENERATION_ID)
+        select_sql, select_params = cursor.execute.call_args_list[0].args
+        self.assertIn("embedded_chunk_count = expected_chunk_count", select_sql)
+        self.assertEqual(select_params, (LOCAL_EMBEDDING_PROFILE.identifier,))
+        self.assertIn(
+            "qualify_workspace_embedding_generation",
+            cursor.execute.call_args_list[2].args[0],
+        )
+        self.assertIn("pg_advisory_xact_lock", cursor.execute.call_args_list[1].args[0])
+
     def test_claim_is_profile_scoped_fair_and_owner_fenced(self):
         cursor = MagicMock()
         cursor.fetchall.return_value = [
@@ -148,6 +171,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         with (
             patch.object(
                 embedding_worker,
+                "qualify_next_embedding_generation",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
                 "claim_next_embedding_generation_batch",
                 return_value=claimed,
             ) as claim,
@@ -178,6 +206,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         connection = MagicMock()
         claimed = [candidate(attempt_count=3)]
         with (
+            patch.object(
+                embedding_worker,
+                "qualify_next_embedding_generation",
+                return_value=None,
+            ),
             patch.object(
                 embedding_worker,
                 "claim_next_embedding_generation_batch",
@@ -214,6 +247,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         with (
             patch.object(
                 embedding_worker,
+                "qualify_next_embedding_generation",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
                 "claim_next_embedding_generation_batch",
                 return_value=[candidate()],
             ),
@@ -234,6 +272,29 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
 
         self.assertTrue(worked)
         connection.rollback.assert_called_once()
+
+    def test_qualifies_complete_generation_without_provider_work(self):
+        connection = MagicMock()
+        with (
+            patch.object(
+                embedding_worker,
+                "qualify_next_embedding_generation",
+                return_value=GENERATION_ID,
+            ),
+            patch.object(
+                embedding_worker,
+                "claim_next_embedding_generation_batch",
+            ) as claim,
+            patch.object(embedding_worker, "get_embeddings") as embed,
+        ):
+            worked = embedding_worker.process_one_embedding_generation_batch(
+                connection
+            )
+
+        self.assertTrue(worked)
+        connection.commit.assert_called_once()
+        claim.assert_not_called()
+        embed.assert_not_called()
 
 
 if __name__ == "__main__":
