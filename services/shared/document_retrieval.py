@@ -497,60 +497,16 @@ def build_document_semantic_query(
         "              ",
     )
 
-    if normalized_generation_id is None:
-        embedding_generation_select = "NULL::uuid AS embedding_generation_id,"
-        vector_expression = "c.embedding"
-        vector_source_sql = "FROM chunks c"
-        vector_filter_sql = f"""
-              AND c.embedding IS NOT NULL
-              AND c.embedding_profile = {embedding_profile_literal}
-        """
-        generation_params: tuple[Any, ...] = ()
-    else:
-        embedding_generation_select = (
-            "candidate_vector.generation_id AS embedding_generation_id,"
-        )
-        vector_expression = "candidate_vector.embedding"
-        vector_source_sql = f"""
-            FROM chunk_embedding_vectors AS candidate_vector
-            JOIN workspace_embedding_generations AS embedding_generation
-              ON embedding_generation.id = candidate_vector.generation_id
-             AND embedding_generation.tenant_id = candidate_vector.tenant_id
-             AND embedding_generation.user_id = candidate_vector.user_id
-             AND embedding_generation.status = 'active'
-             AND embedding_generation.embedding_profile = {embedding_profile_literal}
-            JOIN chunks c
-              ON c.id = candidate_vector.chunk_id
-             AND c.tenant_id = candidate_vector.tenant_id
-             AND c.user_id = candidate_vector.user_id
-        """
-        vector_filter_sql = f"""
-              AND candidate_vector.generation_id = %s::uuid
-              AND candidate_vector.status = 'embedded'
-              AND candidate_vector.is_serving = true
-              AND candidate_vector.embedding IS NOT NULL
-              AND candidate_vector.embedding_profile = {embedding_profile_literal}
-        """
-        generation_params = (normalized_generation_id,)
-
-    # pgvector applies approximate-index filtering after its index scan. Keep
-    # authorization and relational eligibility inside the nearest-neighbor CTE,
-    # but apply the distance threshold outside it so the HNSW scan remains an
-    # ordered nearest-neighbor query. `+ 0` preserves ordering through the
-    # materialized CTE on PostgreSQL 17 and newer.
-    sql = f"""
-        WITH nearest AS MATERIALIZED (
-            SELECT c.id AS chunk_id, c.document_id, c.document_version_id,
-                   {embedding_generation_select}
+    common_columns = """
                    version.version_number, version.title AS doc_title,
                    version.content_hash, version.source_time, version.recorded_at,
                    (d.current_version_id = version.id) AS is_current_version,
                    c.derivation_id, derivation.input_parsed_artifact_id,
                    c.content, c.page_number, c.section_title,
                    c.start_char, c.end_char, c.text_locator_status,
-                   c.text_locator_profile,
-                   {vector_expression} <=> %s::vector AS vector_distance
-            {vector_source_sql}
+                   c.text_locator_profile
+    """
+    common_joins_and_scope = f"""
             JOIN documents d ON c.document_id = d.id
             JOIN document_versions AS version
               ON version.id = c.document_version_id
@@ -571,24 +527,8 @@ def build_document_semantic_query(
               AND d.deleted_at IS NULL
               AND version.status = 'ready'
               AND c.derivation_id = version.current_derivation_id
-              {vector_filter_sql}
-            ORDER BY {vector_expression} <=> %s::vector ASC
-            LIMIT %s
-        )
-        SELECT chunk_id, document_id, document_version_id,
-               embedding_generation_id, version_number,
-               doc_title, content_hash, source_time, recorded_at,
-               is_current_version, derivation_id, input_parsed_artifact_id,
-               content, page_number, section_title, start_char, end_char,
-               text_locator_status, text_locator_profile,
-               (1.0 - vector_distance) AS vector_similarity
-        FROM nearest
-        WHERE vector_distance <= %s
-        ORDER BY vector_distance + 0 ASC
     """
-
-    params: tuple[Any, ...] = (
-        vector_literal,
+    scope_params: tuple[Any, ...] = (
         tenant_id,
         user_id,
         tenant_id,
@@ -605,9 +545,120 @@ def build_document_semantic_query(
             normalized_time_end,
             version_scope,
         ),
-        *generation_params,
-        vector_literal,
-        candidate_limit,
-        1.0 - minimum_similarity,
     )
+
+    # pgvector applies approximate-index filtering after its index scan. Keep
+    # authorization and relational eligibility inside each nearest-neighbor
+    # branch, but apply the distance threshold only after the bounded merge.
+    # Taking top-k from each disjoint source is sufficient for the global top-k.
+    if normalized_generation_id is None:
+        sql = f"""
+        WITH nearest AS MATERIALIZED (
+            SELECT c.id AS chunk_id, c.document_id, c.document_version_id,
+                   NULL::uuid AS embedding_generation_id,
+                   {common_columns},
+                   c.embedding <=> %s::vector AS vector_distance
+            FROM chunks c
+            {common_joins_and_scope}
+              AND c.embedding IS NOT NULL
+              AND c.embedding_profile = {embedding_profile_literal}
+            ORDER BY c.embedding <=> %s::vector ASC
+            LIMIT %s
+        )
+        SELECT chunk_id, document_id, document_version_id,
+               embedding_generation_id, version_number,
+               doc_title, content_hash, source_time, recorded_at,
+               is_current_version, derivation_id, input_parsed_artifact_id,
+               content, page_number, section_title, start_char, end_char,
+               text_locator_status, text_locator_profile,
+               (1.0 - vector_distance) AS vector_similarity
+        FROM nearest
+        WHERE vector_distance <= %s
+        ORDER BY vector_distance + 0 ASC
+        """
+        params: tuple[Any, ...] = (
+            vector_literal,
+            *scope_params,
+            vector_literal,
+            candidate_limit,
+            1.0 - minimum_similarity,
+        )
+    else:
+        sql = f"""
+        WITH generation_nearest AS MATERIALIZED (
+            SELECT c.id AS chunk_id, c.document_id, c.document_version_id,
+                   candidate_vector.generation_id AS embedding_generation_id,
+                   {common_columns},
+                   candidate_vector.embedding <=> %s::vector AS vector_distance
+            FROM chunk_embedding_vectors AS candidate_vector
+            JOIN workspace_embedding_generations AS embedding_generation
+              ON embedding_generation.id = candidate_vector.generation_id
+             AND embedding_generation.tenant_id = candidate_vector.tenant_id
+             AND embedding_generation.user_id = candidate_vector.user_id
+             AND embedding_generation.status = 'active'
+             AND embedding_generation.embedding_profile = {embedding_profile_literal}
+            JOIN chunks c
+              ON c.id = candidate_vector.chunk_id
+             AND c.tenant_id = candidate_vector.tenant_id
+             AND c.user_id = candidate_vector.user_id
+            {common_joins_and_scope}
+              AND candidate_vector.generation_id = %s::uuid
+              AND candidate_vector.status = 'embedded'
+              AND candidate_vector.is_serving = true
+              AND candidate_vector.embedding IS NOT NULL
+              AND candidate_vector.embedding_profile = {embedding_profile_literal}
+            ORDER BY candidate_vector.embedding <=> %s::vector ASC
+            LIMIT %s
+        ), delta_nearest AS MATERIALIZED (
+            SELECT c.id AS chunk_id, c.document_id, c.document_version_id,
+                   NULL::uuid AS embedding_generation_id,
+                   {common_columns},
+                   c.embedding <=> %s::vector AS vector_distance
+            FROM chunks c
+            {common_joins_and_scope}
+              AND c.embedding IS NOT NULL
+              AND c.embedding_profile = {embedding_profile_literal}
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM chunk_embedding_vectors AS snapshot_member
+                  WHERE snapshot_member.generation_id = %s::uuid
+                    AND snapshot_member.chunk_id = c.id
+              )
+            ORDER BY c.embedding <=> %s::vector ASC
+            LIMIT %s
+        ), nearest AS MATERIALIZED (
+            SELECT *
+            FROM (
+                SELECT * FROM generation_nearest
+                UNION ALL
+                SELECT * FROM delta_nearest
+            ) AS combined_nearest
+            ORDER BY vector_distance + 0 ASC
+            LIMIT %s
+        )
+        SELECT chunk_id, document_id, document_version_id,
+               embedding_generation_id, version_number,
+               doc_title, content_hash, source_time, recorded_at,
+               is_current_version, derivation_id, input_parsed_artifact_id,
+               content, page_number, section_title, start_char, end_char,
+               text_locator_status, text_locator_profile,
+               (1.0 - vector_distance) AS vector_similarity
+        FROM nearest
+        WHERE vector_distance <= %s
+        ORDER BY vector_distance + 0 ASC
+        """
+        params = (
+            vector_literal,
+            *scope_params,
+            normalized_generation_id,
+            vector_literal,
+            candidate_limit,
+            vector_literal,
+            *scope_params,
+            normalized_generation_id,
+            vector_literal,
+            candidate_limit,
+            candidate_limit,
+            1.0 - minimum_similarity,
+        )
     return DocumentSemanticQuery(sql=sql, params=params)

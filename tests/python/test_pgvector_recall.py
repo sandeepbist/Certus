@@ -209,6 +209,10 @@ class PgvectorRecallMetricTests(unittest.TestCase):
             cte,
         )
         self.assertIn("candidate_vector.embedding <=> %s::vector", cte)
+        self.assertIn("delta_nearest AS MATERIALIZED", cte)
+        self.assertIn("FROM chunks c", cte)
+        self.assertIn("snapshot_member.generation_id = %s::uuid", cte)
+        self.assertIn("UNION ALL", cte)
         self.assertIn(generation_id, query.params)
         self.assertIn("embedding_generation_id", outer)
 
@@ -640,7 +644,7 @@ class PgvectorRecallMetricTests(unittest.TestCase):
 
         failures = check_pgvector_report(report)
         self.assertIn(
-            "Generation query did not prove active-generation serving",
+            "Generation query did not prove active-baseline plus delta serving",
             failures,
         )
         self.assertIn(

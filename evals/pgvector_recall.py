@@ -659,6 +659,15 @@ def _create_joined_production_fixture(
             LOCAL_EMBEDDING_PROFILE.identifier,
         ),
     )
+    # Model one compatible chunk committed after this immutable active snapshot.
+    # It must remain semantically searchable through the bounded delta branch.
+    cursor.execute(
+        """
+        DELETE FROM chunk_embedding_vectors
+        WHERE generation_id = %s AND chunk_id = 1
+        """,
+        (target_generation_id,),
+    )
     cursor.execute("""
         CREATE INDEX certus_joined_chunks_hnsw_local
         ON chunks USING hnsw (embedding vector_cosine_ops)
@@ -1035,6 +1044,35 @@ def _run_joined_production_cases(
         (target_generation_id,),
     )
     generation_vector_count = int(cursor.fetchone()[0])
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM chunks AS chunk
+        JOIN documents AS document ON document.id = chunk.document_id
+        JOIN document_versions AS version
+          ON version.id = chunk.document_version_id
+         AND version.document_id = chunk.document_id
+        WHERE chunk.tenant_id = %s
+          AND chunk.user_id = %s
+          AND chunk.embedding_profile = %s
+          AND chunk.embedding IS NOT NULL
+          AND document.deleted_at IS NULL
+          AND version.status = 'ready'
+          AND chunk.derivation_id = version.current_derivation_id
+          AND NOT EXISTS (
+              SELECT 1 FROM chunk_embedding_vectors AS snapshot_member
+              WHERE snapshot_member.generation_id = %s
+                AND snapshot_member.chunk_id = chunk.id
+          )
+        """,
+        (
+            target_case.scope.tenant_id,
+            target_case.scope.user_id,
+            target_case.scope.embedding_profile,
+            target_generation_id,
+        ),
+    )
+    delta_vector_count = int(cursor.fetchone()[0])
     index_names = _plan_index_names(document)
     node_types = _plan_node_types(document)
     generation_report = {
@@ -1054,16 +1092,31 @@ def _run_joined_production_cases(
         "temporal_time_end": None,
         "temporal_authority": "effective",
         "version_scope": "all",
-        "serving_source": "active_embedding_generation",
+        "serving_source": "active_generation_plus_compatible_delta",
         "embedding_generation_id": target_generation_id,
         "generation_vector_count": generation_vector_count,
-        "generation_bound": bool(approximate_rows) and all(
-            str(row[3]) == target_generation_id for row in approximate_rows
+        "delta_vector_count": delta_vector_count,
+        "provenance_bound": bool(approximate_rows) and all(
+            (int(row[0]) == 1 and row[3] is None)
+            or (int(row[0]) != 1 and str(row[3]) == target_generation_id)
+            for row in approximate_rows
+        ),
+        "delta_result_present": any(
+            int(row[0]) == 1 and row[3] is None for row in approximate_rows
         ),
         "ann_plan": {
             "uses_hnsw": _contains_index_scan(
                 document,
                 "certus_joined_generation_hnsw_local",
+            ),
+            "uses_delta_hnsw": _contains_index_scan(
+                document,
+                "certus_joined_chunks_hnsw_local",
+            ),
+            "delta_bounded_exact": (
+                delta_vector_count <= 256
+                and "chunks_pkey" in index_names
+                and "Sort" in node_types
             ),
             "uses_generation_scope_index": (
                 "chunk_embedding_vectors_pkey" in index_names
@@ -1549,9 +1602,9 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
             )
 
             return {
-                "schema_version": 13,
+                "schema_version": 14,
                 "run": {
-                    "runner_id": "certus-filtered-pgvector-recall-v13",
+                    "runner_id": "certus-filtered-pgvector-recall-v14",
                     "provider_calls": 0,
                     "persistent_rows_written": 0,
                     "random_seed": 20260830,
@@ -1561,7 +1614,7 @@ def run_pgvector_evaluation(database_url: str) -> dict[str, Any]:
                     "case_count": len(cases),
                     "hnsw": {
                         "profile_isolation": "partial_hnsw_per_supported_profile",
-                        "generation_serving": "active_vectors_only",
+                        "generation_serving": "active_baseline_plus_compatible_delta",
                         "iterative_scan": "strict_order",
                         "m": 16,
                         "ef_construction": 200,
@@ -1726,11 +1779,12 @@ def check_pgvector_report(
         generation_case = by_id.get("target-active-embedding-generation", {})
         if (
             generation_case.get("serving_source")
-            != "active_embedding_generation"
-            or generation_case.get("generation_bound") is not True
+            != "active_generation_plus_compatible_delta"
+            or generation_case.get("provenance_bound") is not True
+            or generation_case.get("delta_result_present") is not True
         ):
             failures.append(
-                "Generation query did not prove active-generation serving"
+                "Generation query did not prove active-baseline plus delta serving"
             )
         if float(generation_case.get("recall_at_20", 0.0)) < minimum_recall:
             failures.append("Active-generation retrieval recall regressed")
@@ -1746,9 +1800,27 @@ def check_pgvector_report(
             )
         if (
             report.get("run", {}).get("hnsw", {}).get("generation_serving")
-            != "active_vectors_only"
+            != "active_baseline_plus_compatible_delta"
         ):
             failures.append("Production HNSW generation serving was not declared")
+    if int(report.get("schema_version", 0)) >= 14:
+        generation_cases = report.get("generation_query_cases", [])
+        generation_case = next(
+            (
+                case
+                for case in generation_cases
+                if case.get("case_id") == "target-active-embedding-generation"
+            ),
+            {},
+        )
+        delta_plan = generation_case.get("ann_plan", {})
+        if not (
+            delta_plan.get("uses_delta_hnsw") is True
+            or delta_plan.get("delta_bounded_exact") is True
+        ):
+            failures.append(
+                "Compatible post-cutover deltas used neither HNSW nor bounded exact search"
+            )
     lexical_cases = report.get("lexical_query_cases", [])
     for case in lexical_cases:
         if not case.get("scope_correct", False):
