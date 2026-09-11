@@ -39,14 +39,23 @@ class StartEmbeddingGenerationRequest(BaseModel):
         return identifier
 
 
+class ActivateEmbeddingGenerationRequest(BaseModel):
+    rollback_window_hours: int = Field(default=168, ge=1, le=720)
+
+
 def _evaluation_summary(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict) or not value:
         return None
     return {
+        "schema_version": value.get("schema_version"),
+        "evaluation_profile": value.get("evaluation_profile"),
+        "evaluation_source": value.get("evaluation_source"),
         "decision": value.get("decision"),
         "gates_passed": value.get("gates_passed"),
+        "quality_claim": value.get("quality_claim"),
         "baseline_fingerprint": value.get("baseline_fingerprint"),
         "candidate_fingerprint": value.get("candidate_fingerprint"),
+        "metrics": value.get("metrics") if isinstance(value.get("metrics"), dict) else None,
     }
 
 
@@ -254,6 +263,57 @@ def cancel_embedding_generation(
     )
 
 
+@router.post("/{generation_id}/activate")
+def activate_embedding_generation(
+    generation_id: uuid.UUID,
+    request: ActivateEmbeddingGenerationRequest,
+    identity: RequestIdentity = Depends(require_request_identity),
+):
+    with get_db_cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s || chr(31) || %s, 0))",
+            (identity.tenant_id, identity.user_id),
+        )
+        cursor.execute(
+            """
+            SELECT status
+            FROM workspace_embedding_generations
+            WHERE id = %s AND tenant_id = %s AND user_id = %s
+            """,
+            (str(generation_id), identity.tenant_id, identity.user_id),
+        )
+        current = cursor.fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Embedding generation not found")
+        if current["status"] != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail="Only a database-qualified ready generation can be activated.",
+            )
+        cursor.execute(
+            """
+            SELECT activate_workspace_embedding_generation(
+                %s, make_interval(hours => %s)
+            ) AS activated
+            """,
+            (str(generation_id), request.rollback_window_hours),
+        )
+        activated = bool(cursor.fetchone()["activated"])
+    if not activated:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The generation no longer satisfies its qualification, corpus, "
+                "or activation contract."
+            ),
+        )
+    return {
+        "generation_id": str(generation_id),
+        "status": "active",
+        "rollback_window_hours": request.rollback_window_hours,
+    }
+
+
 @router.post("/{generation_id}/rollback")
 def rollback_embedding_generation(
     generation_id: uuid.UUID,
@@ -261,11 +321,14 @@ def rollback_embedding_generation(
 ):
     with get_db_cursor() as cursor:
         cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s || chr(31) || %s, 0))",
+            (identity.tenant_id, identity.user_id),
+        )
+        cursor.execute(
             """
             SELECT status
             FROM workspace_embedding_generations
             WHERE id = %s AND tenant_id = %s AND user_id = %s
-            FOR UPDATE
             """,
             (str(generation_id), identity.tenant_id, identity.user_id),
         )

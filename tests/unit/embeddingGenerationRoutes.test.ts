@@ -16,12 +16,18 @@ afterEach(() => {
 describe('embedding generation operator boundary', () => {
   test('allows scoped reads but restricts mutations to trusted operators', async () => {
     process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-service-token-32-characters';
-    const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+    const requests: Array<{
+      url: string;
+      method: string;
+      headers: Headers;
+      body: BodyInit | null | undefined;
+    }> = [];
     globalThis.fetch = (async (input, init = {}) => {
       requests.push({
         url: String(input),
         method: init.method || 'GET',
         headers: new Headers(init.headers),
+        body: init.body,
       });
       return Response.json({ ok: true }, { status: 200 });
     }) as typeof fetch;
@@ -72,6 +78,13 @@ describe('embedding generation operator boundary', () => {
 
       expect((await app.inject({
         method: 'POST',
+        url: '/api/embedding-generations/id/activate',
+        headers: { 'x-test-role': 'owner' },
+        payload: { rollback_window_hours: 72 },
+      })).statusCode).toBe(200);
+
+      expect((await app.inject({
+        method: 'POST',
         url: '/api/embedding-generations/id/rollback',
         headers: {
           'x-test-role': 'admin',
@@ -93,6 +106,10 @@ describe('embedding generation operator boundary', () => {
         method: 'POST',
       },
       {
+        url: 'http://localhost:8002/embedding-generations/id/activate',
+        method: 'POST',
+      },
+      {
         url: 'http://localhost:8002/embedding-generations/id/rollback',
         method: 'POST',
       },
@@ -104,5 +121,7 @@ describe('embedding generation operator boundary', () => {
         'test-internal-service-token-32-characters',
       );
     }
+    expect(requests[2].headers.get('content-type')).toBe('application/json');
+    expect(requests[2].body).toBe(JSON.stringify({ rollback_window_hours: 72 }));
   });
 });

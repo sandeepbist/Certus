@@ -29,6 +29,7 @@ from services.shared.embeddings import (
 from services.shared.embedding_generation_worker import (
     EmbeddingGenerationLeaseLostError,
     claim_next_embedding_generation_batch,
+    qualify_next_embedding_generation,
     record_embedding_generation_batch,
     record_embedding_generation_failure,
 )
@@ -1167,17 +1168,30 @@ def process_one_embedding_generation_batch(conn) -> bool:
     lease_owner = str(uuid.uuid4())
     try:
         with conn.cursor() as cursor:
-            candidates = claim_next_embedding_generation_batch(
+            qualified_generation_id = qualify_next_embedding_generation(
                 cursor,
                 embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
-                lease_owner=lease_owner,
-                batch_size=EMBEDDING_GENERATION_BATCH_SIZE,
-                lease_seconds=EMBEDDING_GENERATION_LEASE_SECONDS,
             )
+            candidates = []
+            if qualified_generation_id is None:
+                candidates = claim_next_embedding_generation_batch(
+                    cursor,
+                    embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
+                    lease_owner=lease_owner,
+                    batch_size=EMBEDDING_GENERATION_BATCH_SIZE,
+                    lease_seconds=EMBEDDING_GENERATION_LEASE_SECONDS,
+                )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+
+    if qualified_generation_id is not None:
+        logger.info(
+            "Embedding generation %s passed database integrity qualification",
+            qualified_generation_id,
+        )
+        return True
 
     if not candidates:
         return False

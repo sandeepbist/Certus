@@ -9,6 +9,7 @@ import psycopg2
 from services.shared.document_retrieval import build_document_semantic_query
 from services.shared.embedding_generation_worker import (
     claim_next_embedding_generation_batch,
+    qualify_next_embedding_generation,
     record_embedding_generation_batch,
     record_embedding_generation_failure,
 )
@@ -23,22 +24,13 @@ class EmbeddingGenerationEvaluationError(RuntimeError):
     """The shadow-generation contract could not be verified safely."""
 
 
-APPROVED_REPORT = {
-    "schema_version": 1,
-    "decision": "approved",
-    "gates_passed": True,
-    "baseline_fingerprint": "control-plane-baseline",
-    "candidate_fingerprint": "control-plane-candidate",
-}
-
-
 def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if (
         report.get("schema", {}).get("latest_migration")
-        != "060_embedding_generation_retention.sql"
+        != "062_embedding_generation_scope_serialization.sql"
     ):
-        failures.append("migration 060 is not the active embedding-generation contract")
+        failures.append("migration 062 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -46,6 +38,8 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
         failures.append("rollback did not restore the previous generation")
     if lifecycle.get("stale") != ["stale", "stale"]:
         failures.append("corpus invalidation did not stale active and building generations")
+    if lifecycle.get("forged_report_rejected") is not True:
+        failures.append("activation accepted a caller-authored evaluation report")
     nonempty = report.get("nonempty_workspace_lifecycle", {})
     if not nonempty.get("skipped"):
         if nonempty.get("wrong_owner_rejected") is not True:
@@ -74,6 +68,8 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("the generation worker scheduler did not dispatch a batch")
         if nonempty.get("attempt_ceiling_failed_generation") is not True:
             failures.append("the generation worker attempt ceiling did not fail closed")
+        if nonempty.get("integrity_rejected_zero_vectors") is not True:
+            failures.append("integrity qualification accepted zero cosine vectors")
     if report.get("run", {}).get("persistent_rows") != 0:
         failures.append("evaluation rows remained after rollback")
     if report.get("run", {}).get("provider_calls") != 0:
@@ -81,12 +77,29 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _seal(cursor: Any, generation_id: str) -> bool:
+def _qualify(cursor: Any, generation_id: str) -> bool:
     cursor.execute(
-        "SELECT seal_workspace_embedding_generation(%s, %s::jsonb)",
-        (generation_id, json.dumps(APPROVED_REPORT, sort_keys=True)),
+        "SELECT embedding_profile FROM workspace_embedding_generations WHERE id = %s",
+        (generation_id,),
     )
-    return bool(cursor.fetchone()[0])
+    profile = str(cursor.fetchone()[0])
+    qualified_id = qualify_next_embedding_generation(
+        cursor,
+        embedding_profile=profile,
+    )
+    if qualified_id != generation_id:
+        return False
+    cursor.execute(
+        "SELECT evaluation_report FROM workspace_embedding_generations WHERE id = %s",
+        (generation_id,),
+    )
+    report = cursor.fetchone()[0]
+    return (
+        report.get("evaluation_profile") == "embedding_generation_integrity_v1"
+        and report.get("evaluation_source") == "database_authoritative"
+        and report.get("quality_claim") == "not_evaluated"
+        and report.get("gates_passed") is True
+    )
 
 
 def _statuses(cursor: Any, generation_ids: list[str]) -> list[str]:
@@ -139,8 +152,10 @@ def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str,
         )
         generation_id = str(cursor.fetchone()[0])
         generations.append(generation_id)
-        if not _seal(cursor, generation_id):
-            raise EmbeddingGenerationEvaluationError("complete empty generation did not seal")
+        if not _qualify(cursor, generation_id):
+            raise EmbeddingGenerationEvaluationError(
+                "complete empty generation did not qualify"
+            )
         cursor.execute(
             "SELECT activate_workspace_embedding_generation(%s)",
             (generation_id,),
@@ -163,11 +178,31 @@ def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str,
     )
     stale_generation = str(cursor.fetchone()[0])
     cursor.execute(
+        """
+        UPDATE workspace_embedding_generations
+        SET status = 'ready',
+            evaluation_report = '{"decision":"approved","gates_passed":true}'::jsonb,
+            sealed_at = NOW(), updated_at = NOW()
+        WHERE id = %s
+        """,
+        (stale_generation,),
+    )
+    cursor.execute(
+        "SELECT activate_workspace_embedding_generation(%s)",
+        (stale_generation,),
+    )
+    forged_report_rejected = not bool(cursor.fetchone()[0])
+    cursor.execute(
         "SELECT invalidate_workspace_embedding_scope(%s, %s)",
         (tenant_id, user_id),
     )
     stale = _statuses(cursor, [generations[0], stale_generation])
-    return {"cutover": cutover, "rollback": rollback, "stale": stale}
+    return {
+        "cutover": cutover,
+        "rollback": rollback,
+        "stale": stale,
+        "forged_report_rejected": forged_report_rejected,
+    }
 
 
 def _eligible_small_scope(cursor: Any) -> tuple[str, str] | None:
@@ -270,7 +305,7 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             (generation_id,),
         )
         expected, embedded, failed = (int(value) for value in cursor.fetchone())
-        sealed = _seal(cursor, generation_id)
+        sealed = _qualify(cursor, generation_id)
         cursor.execute(
             "SELECT activate_workspace_embedding_generation(%s)",
             (generation_id,),
@@ -352,7 +387,7 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
                 ],
                 provider_metadata={"worker_dispatch_probe": True},
             )
-        if not _seal(cursor, replacement_generation_id):
+        if not _qualify(cursor, replacement_generation_id):
             raise EmbeddingGenerationEvaluationError(
                 "complete replacement generation did not seal"
             )
@@ -418,6 +453,45 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             attempt_ceiling_triggered and cursor.fetchone()[0] == "failed"
         )
 
+        cursor.execute(
+            "SELECT start_workspace_embedding_generation(%s, %s, %s)",
+            (tenant_id, user_id, LOCAL_EMBEDDING_PROFILE.identifier),
+        )
+        zero_generation_id = str(cursor.fetchone()[0])
+        zero_owner = str(uuid.uuid4())
+        while True:
+            zero_candidates = claim_next_embedding_generation_batch(
+                cursor,
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+                lease_owner=zero_owner,
+                batch_size=100,
+                lease_seconds=60,
+            )
+            if not zero_candidates:
+                break
+            record_embedding_generation_batch(
+                cursor,
+                candidates=zero_candidates,
+                lease_owner=zero_owner,
+                embeddings=[
+                    [0.0] * LOCAL_EMBEDDING_PROFILE.dimensions
+                    for _ in zero_candidates
+                ],
+                provider_metadata={"integrity_rejection_probe": True},
+            )
+        _qualify(cursor, zero_generation_id)
+        cursor.execute(
+            """
+            SELECT status, evaluation_report->>'decision'
+            FROM workspace_embedding_generations WHERE id = %s
+            """,
+            (zero_generation_id,),
+        )
+        zero_status, zero_decision = cursor.fetchone()
+        integrity_rejected_zero_vectors = (
+            zero_status == "failed" and zero_decision == "rejected"
+        )
+
         semantic_query = build_document_semantic_query(
             vector_literal=first_vector,
             tenant_id=tenant_id,
@@ -473,6 +547,7 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             "stale_removed_from_serving": stale_serving_count == 0,
             "worker_dispatch_batches": worker_dispatch_batches,
             "attempt_ceiling_failed_generation": attempt_ceiling_failed_generation,
+            "integrity_rejected_zero_vectors": integrity_rejected_zero_vectors,
         }
     finally:
         cursor.execute("ROLLBACK TO SAVEPOINT nonempty_generation_contract")
@@ -494,8 +569,14 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
                 "WHERE filename LIKE '%embedding%' ORDER BY filename"
             )
             migrations = [str(row[0]) for row in cursor.fetchall()]
-            if "060_embedding_generation_retention.sql" not in migrations:
-                raise EmbeddingGenerationEvaluationError("migration 060 is not applied")
+            required_migrations = {
+                "061_trusted_embedding_generation_promotion.sql",
+                "062_embedding_generation_scope_serialization.sql",
+            }
+            if not required_migrations.issubset(migrations):
+                raise EmbeddingGenerationEvaluationError(
+                    "trusted promotion migrations 061 and 062 are not applied"
+                )
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
             )
@@ -511,7 +592,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "060_embedding_generation_retention.sql",
+                "latest_migration": "062_embedding_generation_scope_serialization.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,
