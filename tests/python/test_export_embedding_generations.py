@@ -36,7 +36,9 @@ class ExportCursor:
             return [{
                 "id": "generation",
                 "embedding_profile": "profile",
+                "creation_reason": "operator",
                 "status": "active",
+                "is_paused": False,
             }]
         if "FROM chunk_embedding_vectors" in self.current:
             return [{
@@ -49,13 +51,16 @@ class ExportCursor:
 
 
 class ExportEmbeddingGenerationTests(unittest.TestCase):
-    def test_schema_v10_exports_rebuild_provenance_without_shadow_vectors(self):
+    def test_schema_v11_exports_control_and_rebuild_provenance_without_vectors(self):
         cursor = ExportCursor()
 
         data = export_api._collect_export_data(cursor, IDENTITY)
 
-        self.assertEqual(export_api.EXPORT_SCHEMA_VERSION, 10)
+        self.assertEqual(export_api.EXPORT_SCHEMA_VERSION, 11)
         self.assertEqual(data["embedding_generations"][0]["status"], "active")
+        self.assertEqual(
+            data["embedding_generations"][0]["creation_reason"], "operator"
+        )
         manifest = data["chunk_embedding_vector_manifests"][0]
         self.assertFalse(manifest["embedding_payload_included"])
         generation_sql = next(

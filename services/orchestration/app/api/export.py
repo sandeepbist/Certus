@@ -17,7 +17,7 @@ from app.retrieval.export_archive import (
 router = APIRouter(prefix="", tags=["Data Portability & GDPR Compliance"])
 
 EXPORT_RETENTION_HOURS = 48
-EXPORT_SCHEMA_VERSION = 10
+EXPORT_SCHEMA_VERSION = 11
 
 
 class _BudgetedExportCursor:
@@ -294,7 +294,9 @@ def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
         cursor,
         """
         SELECT id, tenant_id, user_id, embedding_profile,
-               source_corpus_revision, status, expected_chunk_count,
+               creation_reason, source_corpus_revision, status, is_paused,
+               last_paused_at, last_resumed_at, last_pause_reason,
+               expected_chunk_count,
                embedded_chunk_count, failed_chunk_count, evaluation_report,
                previous_generation_id, last_error, created_at, updated_at,
                sealed_at, activated_at, retired_at, stale_at, rollback_until,

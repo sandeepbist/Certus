@@ -90,7 +90,7 @@ export const embeddingGenerationRoutes: FastifyPluginAsync = async (fastify) => 
     );
   });
 
-  for (const action of ['cancel', 'activate', 'rollback'] as const) {
+  for (const action of ['cancel', 'pause', 'resume', 'activate', 'rollback'] as const) {
     fastify.post<{ Params: { id: string } }>(
       `/api/embedding-generations/:id/${action}`,
       async (request, reply) => {
@@ -103,7 +103,7 @@ export const embeddingGenerationRoutes: FastifyPluginAsync = async (fastify) => 
           `/embedding-generations/${encodeURIComponent(request.params.id)}/${action}`,
           {
             method: 'POST',
-            ...(action === 'activate'
+            ...(action === 'activate' || action === 'pause'
               ? {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(request.body || {}),

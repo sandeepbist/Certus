@@ -17,6 +17,7 @@ router = APIRouter(prefix="/embedding-generations", tags=["Embedding Generations
 
 GenerationStatus = Literal[
     "building",
+    "paused",
     "ready",
     "active",
     "retired",
@@ -41,6 +42,17 @@ class StartEmbeddingGenerationRequest(BaseModel):
 
 class ActivateEmbeddingGenerationRequest(BaseModel):
     rollback_window_hours: int = Field(default=168, ge=1, le=720)
+
+
+class PauseEmbeddingGenerationRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 def _evaluation_summary(value: Any) -> dict[str, Any] | None:
@@ -77,7 +89,8 @@ def _generation_payload(row: Any) -> dict[str, Any]:
                 == int(payload["current_corpus_revision"])
             ),
         },
-        "status": payload["status"],
+        "status": "paused" if payload["is_paused"] else payload["status"],
+        "is_paused": bool(payload["is_paused"]),
         "progress": {
             "expected": expected,
             "embedded": embedded,
@@ -99,6 +112,9 @@ def _generation_payload(row: Any) -> dict[str, Any]:
         "stale_at": payload.get("stale_at"),
         "rollback_until": payload.get("rollback_until"),
         "retain_until": payload.get("retain_until"),
+        "last_paused_at": payload.get("last_paused_at"),
+        "last_resumed_at": payload.get("last_resumed_at"),
+        "last_pause_reason": payload.get("last_pause_reason"),
     }
 
 
@@ -107,7 +123,8 @@ GENERATION_SELECT = """
            expected_chunk_count, embedded_chunk_count, failed_chunk_count,
            previous_generation_id, evaluation_report, last_error,
            created_at, updated_at, sealed_at, activated_at, retired_at,
-           stale_at, rollback_until, retain_until,
+           stale_at, rollback_until, retain_until, is_paused,
+           last_paused_at, last_resumed_at, last_pause_reason,
            COALESCE((
                SELECT revision
                FROM workspace_embedding_corpus_revisions AS corpus
@@ -133,7 +150,11 @@ def list_embedding_generations(
                 identity.tenant_id,
                 identity.user_id,
             ]
-            if status is not None:
+            if status == "paused":
+                anchor_filters.append("status = 'building' AND is_paused = true")
+            elif status == "building":
+                anchor_filters.append("status = 'building' AND is_paused = false")
+            elif status is not None:
                 anchor_filters.append("status = %s")
                 anchor_params.append(status)
             cursor.execute(
@@ -155,7 +176,11 @@ def list_embedding_generations(
 
         filters = ["tenant_id = %s", "user_id = %s"]
         params: list[object] = [identity.tenant_id, identity.user_id]
-        if status is not None:
+        if status == "paused":
+            filters.append("status = 'building' AND is_paused = true")
+        elif status == "building":
+            filters.append("status = 'building' AND is_paused = false")
+        elif status is not None:
             filters.append("status = %s")
             params.append(status)
         if anchor is not None:
@@ -250,6 +275,7 @@ def cancel_embedding_generation(
             f"""
             UPDATE workspace_embedding_generations
             SET status = 'cancelled',
+                is_paused = false,
                 last_error = 'Cancelled by a workspace operator.',
                 rollback_until = NULL,
                 updated_at = NOW()
@@ -275,6 +301,81 @@ def cancel_embedding_generation(
     raise HTTPException(
         status_code=409,
         detail=f"A {current['status']} generation cannot be cancelled.",
+    )
+
+
+@router.post("/{generation_id}/pause")
+def pause_embedding_generation(
+    generation_id: uuid.UUID,
+    request: PauseEmbeddingGenerationRequest,
+    identity: RequestIdentity = Depends(require_request_identity),
+):
+    with get_db_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT pause_workspace_embedding_generation(%s, %s, %s, %s) AS paused
+            """,
+            (
+                str(generation_id),
+                identity.tenant_id,
+                identity.user_id,
+                request.reason,
+            ),
+        )
+        paused = bool(cursor.fetchone()["paused"])
+        if paused:
+            return {"generation_id": str(generation_id), "status": "paused"}
+        cursor.execute(
+            """
+            SELECT status, is_paused
+            FROM workspace_embedding_generations
+            WHERE id = %s AND tenant_id = %s AND user_id = %s
+            """,
+            (str(generation_id), identity.tenant_id, identity.user_id),
+        )
+        current = cursor.fetchone()
+    if not current:
+        raise HTTPException(status_code=404, detail="Embedding generation not found")
+    current_status = "paused" if current["is_paused"] else current["status"]
+    raise HTTPException(
+        status_code=409,
+        detail=f"A {current_status} generation cannot be paused.",
+    )
+
+
+@router.post("/{generation_id}/resume")
+def resume_embedding_generation(
+    generation_id: uuid.UUID,
+    identity: RequestIdentity = Depends(require_request_identity),
+):
+    with get_db_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT resume_workspace_embedding_generation(%s, %s, %s) AS resumed
+            """,
+            (str(generation_id), identity.tenant_id, identity.user_id),
+        )
+        resumed = bool(cursor.fetchone()["resumed"])
+        if resumed:
+            return {"generation_id": str(generation_id), "status": "building"}
+        cursor.execute(
+            """
+            SELECT status, is_paused
+            FROM workspace_embedding_generations
+            WHERE id = %s AND tenant_id = %s AND user_id = %s
+            """,
+            (str(generation_id), identity.tenant_id, identity.user_id),
+        )
+        current = cursor.fetchone()
+    if not current:
+        raise HTTPException(status_code=404, detail="Embedding generation not found")
+    current_status = "paused" if current["is_paused"] else current["status"]
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"A {current_status} generation cannot be resumed; "
+            "its corpus may have changed."
+        ),
     )
 
 

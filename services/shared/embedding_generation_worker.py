@@ -48,6 +48,7 @@ def qualify_next_embedding_generation(
         SELECT id, tenant_id, user_id
         FROM workspace_embedding_generations
         WHERE status = 'building'
+          AND is_paused = false
           AND embedding_profile = %s
           AND embedded_chunk_count = expected_chunk_count
           AND failed_chunk_count = 0
@@ -143,6 +144,7 @@ def claim_next_embedding_generation_batch(
             SELECT generation.id
             FROM workspace_embedding_generations AS generation
             WHERE generation.status = 'building'
+              AND generation.is_paused = false
               AND generation.embedding_profile = %s
               AND EXISTS (
                   SELECT 1
