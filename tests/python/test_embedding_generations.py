@@ -7,7 +7,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_complete_report_passes(self):
         report = {
             "schema": {
-                "latest_migration": "064_automatic_embedding_generation_refresh.sql"
+                "latest_migration": "065_embedding_generation_pause_resume.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
@@ -15,6 +15,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "stale": ["active", "stale"],
                 "forged_report_rejected": True,
                 "automatic_refresh": True,
+                "stale_paused_resume_rejected": True,
             },
             "nonempty_workspace_lifecycle": {
                 "skipped": False,
@@ -36,6 +37,9 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "automatic_refresh_cutover_counts": [0, 3],
                 "manual_generation_required_operator_activation": True,
                 "automatic_refresh_waited_for_processing": True,
+                "pause_released_inflight_lease": True,
+                "paused_claim_blocked": True,
+                "resume_reopened_generation": True,
                 "chunk_count": 2,
                 "worker_dispatch_batches": 1,
                 "attempt_ceiling_failed_generation": True,
@@ -73,12 +77,12 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
             "run": {"persistent_rows": 1, "provider_calls": 1},
         }
         failures = check_embedding_generation_report(report)
-        self.assertEqual(len(failures), 28)
+        self.assertEqual(len(failures), 32)
 
     def test_empty_database_may_skip_only_the_nonempty_probe(self):
         report = {
             "schema": {
-                "latest_migration": "064_automatic_embedding_generation_refresh.sql"
+                "latest_migration": "065_embedding_generation_pause_resume.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
@@ -86,6 +90,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "stale": ["active", "stale"],
                 "forged_report_rejected": True,
                 "automatic_refresh": True,
+                "stale_paused_resume_rejected": True,
             },
             "nonempty_workspace_lifecycle": {"skipped": True},
             "run": {"persistent_rows": 0, "provider_calls": 0},

@@ -78,6 +78,19 @@ describe('embedding generation operator boundary', () => {
 
       expect((await app.inject({
         method: 'POST',
+        url: '/api/embedding-generations/id/pause',
+        headers: { 'x-test-role': 'owner' },
+        payload: { reason: 'maintenance' },
+      })).statusCode).toBe(200);
+
+      expect((await app.inject({
+        method: 'POST',
+        url: '/api/embedding-generations/id/resume',
+        headers: { 'x-test-role': 'owner' },
+      })).statusCode).toBe(200);
+
+      expect((await app.inject({
+        method: 'POST',
         url: '/api/embedding-generations/id/activate',
         headers: { 'x-test-role': 'owner' },
         payload: { rollback_window_hours: 72 },
@@ -106,6 +119,14 @@ describe('embedding generation operator boundary', () => {
         method: 'POST',
       },
       {
+        url: 'http://localhost:8002/embedding-generations/id/pause',
+        method: 'POST',
+      },
+      {
+        url: 'http://localhost:8002/embedding-generations/id/resume',
+        method: 'POST',
+      },
+      {
         url: 'http://localhost:8002/embedding-generations/id/activate',
         method: 'POST',
       },
@@ -122,6 +143,8 @@ describe('embedding generation operator boundary', () => {
       );
     }
     expect(requests[2].headers.get('content-type')).toBe('application/json');
-    expect(requests[2].body).toBe(JSON.stringify({ rollback_window_hours: 72 }));
+    expect(requests[2].body).toBe(JSON.stringify({ reason: 'maintenance' }));
+    expect(requests[4].headers.get('content-type')).toBe('application/json');
+    expect(requests[4].body).toBe(JSON.stringify({ rollback_window_hours: 72 }));
   });
 });

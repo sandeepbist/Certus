@@ -1411,17 +1411,30 @@ def embedding_queue_metadata(conn) -> dict:
             row = cursor.fetchone()
             cursor.execute(
                 """
-                WITH bounded AS (
+                WITH active_bounded AS (
                     SELECT expected_chunk_count, embedded_chunk_count,
                            failed_chunk_count, created_at
                     FROM workspace_embedding_generations
                     WHERE status = 'building'
+                      AND is_paused = false
+                      AND embedding_profile = %s
+                    ORDER BY updated_at, id
+                    LIMIT 1001
+                ), paused_bounded AS (
+                    SELECT id
+                    FROM workspace_embedding_generations
+                    WHERE status = 'building'
+                      AND is_paused = true
                       AND embedding_profile = %s
                     ORDER BY updated_at, id
                     LIMIT 1001
                 )
                 SELECT LEAST(1000, COUNT(*)) AS generations,
                        COUNT(*) > 1000 AS generations_capped,
+                       (SELECT LEAST(1000, COUNT(*)) FROM paused_bounded)
+                           AS paused_generations,
+                       (SELECT COUNT(*) > 1000 FROM paused_bounded)
+                           AS paused_generations_capped,
                        COALESCE(SUM(
                            expected_chunk_count - embedded_chunk_count
                        ), 0) AS outstanding,
@@ -1430,9 +1443,12 @@ def embedding_queue_metadata(conn) -> dict:
                            EXTRACT(EPOCH FROM (NOW() - MIN(created_at))),
                            0
                        )::BIGINT AS oldest_outstanding_seconds
-                FROM bounded
+                FROM active_bounded
                 """,
-                (ACTIVE_EMBEDDING_PROFILE.identifier,),
+                (
+                    ACTIVE_EMBEDDING_PROFILE.identifier,
+                    ACTIVE_EMBEDDING_PROFILE.identifier,
+                ),
             )
             generation_row = cursor.fetchone()
         conn.commit()
@@ -1452,6 +1468,12 @@ def embedding_queue_metadata(conn) -> dict:
         "generation_queue": {
             "generations": int(generation_row["generations"] or 0),
             "generations_capped": bool(generation_row["generations_capped"]),
+            "paused_generations": int(
+                generation_row["paused_generations"] or 0
+            ),
+            "paused_generations_capped": bool(
+                generation_row["paused_generations_capped"]
+            ),
             "outstanding": int(generation_row["outstanding"] or 0),
             "failed": int(generation_row["failed"] or 0),
             "oldest_outstanding_seconds": max(
@@ -1520,6 +1542,8 @@ def run_worker():
         "generation_queue": {
             "generations": 0,
             "generations_capped": False,
+            "paused_generations": 0,
+            "paused_generations_capped": False,
             "outstanding": 0,
             "failed": 0,
             "oldest_outstanding_seconds": 0,

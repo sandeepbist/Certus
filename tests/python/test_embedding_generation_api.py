@@ -37,6 +37,10 @@ def generation_row() -> dict:
         "source_corpus_revision": 4,
         "current_corpus_revision": 5,
         "status": "building",
+        "is_paused": False,
+        "last_paused_at": None,
+        "last_resumed_at": None,
+        "last_pause_reason": None,
         "expected_chunk_count": 10,
         "embedded_chunk_count": 7,
         "failed_chunk_count": 1,
@@ -128,8 +132,35 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
         sql, params = cursor.statements[-1]
         self.assertIn("tenant_id = %s", sql)
         self.assertIn("user_id = %s", sql)
-        self.assertEqual(params[:3], ["tenant-proof", "user-proof", "building"])
+        self.assertIn("is_paused = false", sql)
+        self.assertEqual(params[:2], ["tenant-proof", "user-proof"])
         self.assertEqual(params[-1], 2)
+
+    def test_paused_generation_has_an_explicit_effective_status(self):
+        row = generation_row()
+        row.update(
+            {
+                "is_paused": True,
+                "last_paused_at": row["created_at"],
+                "last_pause_reason": "maintenance window",
+            }
+        )
+
+        payload = embedding_generations._generation_payload(row)
+
+        self.assertEqual(payload["status"], "paused")
+        self.assertTrue(payload["is_paused"])
+        self.assertEqual(payload["last_pause_reason"], "maintenance window")
+
+    def test_pause_reason_is_trimmed_and_bounded(self):
+        request = embedding_generations.PauseEmbeddingGenerationRequest(
+            reason="  maintenance  "
+        )
+        self.assertEqual(request.reason, "maintenance")
+        with self.assertRaises(ValueError):
+            embedding_generations.PauseEmbeddingGenerationRequest(
+                reason="x" * 501
+            )
 
     def test_start_uses_database_snapshot_function_and_returns_progress(self):
         cursor = FakeCursor(
@@ -183,6 +214,51 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
         self.assertEqual(response["status"], "rolled_back")
         self.assertIn("pg_advisory_xact_lock", active.statements[0][0])
         self.assertIn("rollback_workspace_embedding_generation", active.statements[2][0])
+
+    def test_pause_and_resume_use_scoped_database_transitions(self):
+        paused = FakeCursor(fetchones=[{"paused": True}])
+        with patch.object(
+            embedding_generations,
+            "get_db_cursor",
+            return_value=cursor_context(paused),
+        ):
+            response = embedding_generations.pause_embedding_generation(
+                generation_id=GENERATION_ID,
+                request=embedding_generations.PauseEmbeddingGenerationRequest(
+                    reason="operator maintenance"
+                ),
+                identity=IDENTITY,
+            )
+        self.assertEqual(response["status"], "paused")
+        self.assertIn(
+            "pause_workspace_embedding_generation",
+            paused.statements[0][0],
+        )
+        self.assertEqual(
+            paused.statements[0][1],
+            (
+                str(GENERATION_ID),
+                "tenant-proof",
+                "user-proof",
+                "operator maintenance",
+            ),
+        )
+
+        resumed = FakeCursor(fetchones=[{"resumed": True}])
+        with patch.object(
+            embedding_generations,
+            "get_db_cursor",
+            return_value=cursor_context(resumed),
+        ):
+            response = embedding_generations.resume_embedding_generation(
+                generation_id=GENERATION_ID,
+                identity=IDENTITY,
+            )
+        self.assertEqual(response["status"], "building")
+        self.assertIn(
+            "resume_workspace_embedding_generation",
+            resumed.statements[0][0],
+        )
 
     def test_activation_requires_ready_scope_and_bounded_rollback_window(self):
         cursor = FakeCursor(

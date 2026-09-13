@@ -32,6 +32,40 @@ def candidate(attempt_count: int = 1) -> EmbeddingGenerationCandidate:
 
 
 class EmbeddingGenerationWorkerPrimitiveTests(unittest.TestCase):
+    def test_queue_metadata_separates_paused_from_runnable_generations(self):
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [
+            {
+                "outstanding": 4,
+                "outstanding_capped": False,
+                "failed": 1,
+                "failed_capped": False,
+                "oldest_outstanding_seconds": 12,
+            },
+            {
+                "generations": 2,
+                "generations_capped": False,
+                "paused_generations": 3,
+                "paused_generations_capped": False,
+                "outstanding": 8,
+                "failed": 1,
+                "oldest_outstanding_seconds": 20,
+            },
+        ]
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+
+        metadata = embedding_worker.embedding_queue_metadata(connection)
+
+        generation_queue = metadata["generation_queue"]
+        self.assertEqual(generation_queue["generations"], 2)
+        self.assertEqual(generation_queue["paused_generations"], 3)
+        generation_sql = cursor.execute.call_args_list[2].args[0]
+        self.assertIn("is_paused = false", generation_sql)
+        self.assertIn("is_paused = true", generation_sql)
+        connection.commit.assert_called_once_with()
+        connection.rollback.assert_not_called()
+
     def test_qualification_selects_only_complete_profile_scoped_work(self):
         cursor = MagicMock()
         cursor.fetchone.side_effect = [
@@ -47,6 +81,7 @@ class EmbeddingGenerationWorkerPrimitiveTests(unittest.TestCase):
         self.assertEqual(qualified, GENERATION_ID)
         select_sql, select_params = cursor.execute.call_args_list[0].args
         self.assertIn("embedded_chunk_count = expected_chunk_count", select_sql)
+        self.assertIn("is_paused = false", select_sql)
         self.assertEqual(select_params, (LOCAL_EMBEDDING_PROFILE.identifier,))
         self.assertIn(
             "qualify_workspace_embedding_generation",
@@ -71,6 +106,7 @@ class EmbeddingGenerationWorkerPrimitiveTests(unittest.TestCase):
         sql, params = cursor.execute.call_args.args
         self.assertIn("FOR UPDATE SKIP LOCKED", sql)
         self.assertIn("claim_chunk_embedding_vectors", sql)
+        self.assertIn("generation.is_paused = false", sql)
         self.assertIn("ORDER BY generation.updated_at, generation.id", sql)
         self.assertEqual(params[0], LOCAL_EMBEDDING_PROFILE.identifier)
         self.assertEqual(params[2], LEASE_OWNER)

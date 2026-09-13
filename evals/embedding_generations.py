@@ -30,9 +30,9 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if (
         report.get("schema", {}).get("latest_migration")
-        != "064_automatic_embedding_generation_refresh.sql"
+        != "065_embedding_generation_pause_resume.sql"
     ):
-        failures.append("migration 064 is not the active embedding-generation contract")
+        failures.append("migration 065 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -46,6 +46,8 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
         failures.append("activation accepted a caller-authored evaluation report")
     if lifecycle.get("automatic_refresh") is not True:
         failures.append("an empty revision-lagged workspace did not refresh automatically")
+    if lifecycle.get("stale_paused_resume_rejected") is not True:
+        failures.append("a corpus-stale paused generation resumed")
     nonempty = report.get("nonempty_workspace_lifecycle", {})
     if not nonempty.get("skipped"):
         if nonempty.get("wrong_owner_rejected") is not True:
@@ -85,6 +87,12 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("automatic cutover accepted an operator-authored generation")
         if nonempty.get("automatic_refresh_waited_for_processing") is not True:
             failures.append("automatic refresh started while document processing was open")
+        if nonempty.get("pause_released_inflight_lease") is not True:
+            failures.append("pausing did not release an in-flight candidate lease")
+        if nonempty.get("paused_claim_blocked") is not True:
+            failures.append("a paused generation admitted candidate work")
+        if nonempty.get("resume_reopened_generation") is not True:
+            failures.append("a current paused generation did not resume")
         if int(nonempty.get("worker_dispatch_batches", 0)) < 1:
             failures.append("the generation worker scheduler did not dispatch a batch")
         if nonempty.get("attempt_ceiling_failed_generation") is not True:
@@ -121,6 +129,20 @@ def _qualify(cursor: Any, generation_id: str) -> bool:
         and report.get("quality_claim") == "not_evaluated"
         and report.get("gates_passed") is True
     )
+
+
+def _qualify_eventually(cursor: Any, generation_id: str) -> bool:
+    """Let the fair scheduler service older complete work before this target."""
+    for _ in range(10):
+        if _qualify(cursor, generation_id):
+            return True
+        cursor.execute(
+            "SELECT status FROM workspace_embedding_generations WHERE id = %s",
+            (generation_id,),
+        )
+        if cursor.fetchone()[0] != "building":
+            return False
+    return False
 
 
 def _statuses(cursor: Any, generation_ids: list[str]) -> list[str]:
@@ -222,12 +244,42 @@ def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str,
         (tenant_id, user_id),
     )
     stale = _statuses(cursor, [generations[0], stale_generation])
+    cursor.execute(
+        "SELECT start_workspace_embedding_generation(%s, %s, %s)",
+        (tenant_id, user_id, profiles[2]),
+    )
+    paused_stale_generation_id = str(cursor.fetchone()[0])
+    cursor.execute(
+        "SELECT pause_workspace_embedding_generation(%s, %s, %s, %s)",
+        (
+            paused_stale_generation_id,
+            tenant_id,
+            user_id,
+            "corpus drift probe",
+        ),
+    )
+    if not cursor.fetchone()[0]:
+        raise EmbeddingGenerationEvaluationError("empty generation did not pause")
+    cursor.execute(
+        "SELECT invalidate_workspace_embedding_scope(%s, %s)",
+        (tenant_id, user_id),
+    )
+    cursor.execute(
+        "SELECT resume_workspace_embedding_generation(%s, %s, %s)",
+        (paused_stale_generation_id, tenant_id, user_id),
+    )
+    resumed_stale = bool(cursor.fetchone()[0])
+    cursor.execute(
+        "SELECT status, is_paused FROM workspace_embedding_generations WHERE id = %s",
+        (paused_stale_generation_id,),
+    )
+    paused_stale_status = cursor.fetchone()
     automatic_generation_id = start_next_embedding_generation_refresh(
         cursor,
         embedding_profile=profiles[0],
         quiet_period_seconds=0,
     )
-    if automatic_generation_id is None or not _qualify(
+    if automatic_generation_id is None or not _qualify_eventually(
         cursor, automatic_generation_id
     ):
         raise EmbeddingGenerationEvaluationError(
@@ -247,6 +299,9 @@ def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str,
         "stale": stale,
         "forged_report_rejected": forged_report_rejected,
         "automatic_refresh": automatic_refresh,
+        "stale_paused_resume_rejected": (
+            not resumed_stale and paused_stale_status == ("stale", False)
+        ),
     }
 
 
@@ -317,6 +372,51 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
         )
         if not cursor.fetchone()[0]:
             raise EmbeddingGenerationEvaluationError("lease owner could not record retry")
+
+        cursor.execute(
+            "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 1, 60)",
+            (generation_id, second_owner),
+        )
+        paused_candidate = cursor.fetchone()
+        if paused_candidate is None:
+            raise EmbeddingGenerationEvaluationError(
+                "pause probe could not claim an in-flight candidate"
+            )
+        paused_chunk_id = str(paused_candidate[0])
+        cursor.execute(
+            "SELECT pause_workspace_embedding_generation(%s, %s, %s, %s)",
+            (generation_id, tenant_id, user_id, "evaluation pause"),
+        )
+        if not cursor.fetchone()[0]:
+            raise EmbeddingGenerationEvaluationError("building generation did not pause")
+        cursor.execute(
+            """
+            SELECT generation.is_paused, candidate.status,
+                   candidate.lease_owner, candidate.leased_at
+            FROM workspace_embedding_generations AS generation
+            JOIN chunk_embedding_vectors AS candidate
+              ON candidate.generation_id = generation.id
+            WHERE generation.id = %s AND candidate.chunk_id = %s
+            """,
+            (generation_id, paused_chunk_id),
+        )
+        paused_state = cursor.fetchone()
+        pause_released_inflight_lease = paused_state == (
+            True,
+            "pending",
+            None,
+            None,
+        )
+        cursor.execute(
+            "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 1, 60)",
+            (generation_id, first_owner),
+        )
+        paused_claim_blocked = cursor.fetchone() is None
+        cursor.execute(
+            "SELECT resume_workspace_embedding_generation(%s, %s, %s)",
+            (generation_id, tenant_id, user_id),
+        )
+        resume_reopened_generation = bool(cursor.fetchone()[0])
 
         while True:
             cursor.execute(
@@ -767,7 +867,7 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             automatic_active_reused,
             automatic_canonical_reused,
         ) = cursor.fetchone()
-        if not _qualify(cursor, automatic_generation_id):
+        if not _qualify_eventually(cursor, automatic_generation_id):
             cursor.execute(
                 """
                 SELECT status, expected_chunk_count, embedded_chunk_count,
@@ -835,6 +935,9 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             "automatic_refresh_waited_for_processing": (
                 blocked_refresh_id is None
             ),
+            "pause_released_inflight_lease": pause_released_inflight_lease,
+            "paused_claim_blocked": paused_claim_blocked,
+            "resume_reopened_generation": resume_reopened_generation,
             "worker_dispatch_batches": worker_dispatch_batches,
             "attempt_ceiling_failed_generation": attempt_ceiling_failed_generation,
             "integrity_rejected_zero_vectors": integrity_rejected_zero_vectors,
@@ -863,10 +966,11 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
                 "062_embedding_generation_scope_serialization.sql",
                 "063_active_generation_delta_serving.sql",
                 "064_automatic_embedding_generation_refresh.sql",
+                "065_embedding_generation_pause_resume.sql",
             }
             if not required_migrations.issubset(migrations):
                 raise EmbeddingGenerationEvaluationError(
-                    "embedding generation migrations 061 through 064 are not applied"
+                    "embedding generation migrations 061 through 065 are not applied"
                 )
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
@@ -883,7 +987,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "064_automatic_embedding_generation_refresh.sql",
+                "latest_migration": "065_embedding_generation_pause_resume.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,

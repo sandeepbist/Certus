@@ -69,6 +69,9 @@ class EmbeddingProfileTests(unittest.TestCase):
         automatic_refresh = Path(
             "infra/db/migrations/064_automatic_embedding_generation_refresh.sql"
         ).read_text(encoding="utf-8")
+        pause_resume = Path(
+            "infra/db/migrations/065_embedding_generation_pause_resume.sql"
+        ).read_text(encoding="utf-8")
 
         for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
             literal = serving_embedding_profile_sql_literal(identifier)
@@ -115,6 +118,11 @@ class EmbeddingProfileTests(unittest.TestCase):
         self.assertIn("'reuse_source', 'canonical_chunk'", automatic_refresh)
         self.assertIn("pg_advisory_xact_lock", automatic_refresh)
         self.assertIn("version.pending_derivation_id", automatic_refresh)
+        self.assertIn("is_paused = false", pause_resume)
+        self.assertIn("FOR SHARE", pause_resume)
+        self.assertIn("status = 'pending', lease_owner = NULL", pause_resume)
+        self.assertIn("source_corpus_revision", pause_resume)
+        self.assertIn("pg_advisory_xact_lock", pause_resume)
 
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):
