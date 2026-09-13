@@ -8,10 +8,12 @@ import psycopg2
 
 from services.shared.document_retrieval import build_document_semantic_query
 from services.shared.embedding_generation_worker import (
+    activate_next_embedding_generation_refresh,
     claim_next_embedding_generation_batch,
     qualify_next_embedding_generation,
     record_embedding_generation_batch,
     record_embedding_generation_failure,
+    start_next_embedding_generation_refresh,
 )
 from services.shared.embeddings import (
     LOCAL_EMBEDDING_PROFILE,
@@ -28,9 +30,9 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if (
         report.get("schema", {}).get("latest_migration")
-        != "063_active_generation_delta_serving.sql"
+        != "064_automatic_embedding_generation_refresh.sql"
     ):
-        failures.append("migration 063 is not the active embedding-generation contract")
+        failures.append("migration 064 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -42,6 +44,8 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
         )
     if lifecycle.get("forged_report_rejected") is not True:
         failures.append("activation accepted a caller-authored evaluation report")
+    if lifecycle.get("automatic_refresh") is not True:
+        failures.append("an empty revision-lagged workspace did not refresh automatically")
     nonempty = report.get("nonempty_workspace_lifecycle", {})
     if not nonempty.get("skipped"):
         if nonempty.get("wrong_owner_rejected") is not True:
@@ -66,6 +70,21 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("rollback did not restore serving membership atomically")
         if nonempty.get("active_baseline_retained_after_corpus_change") is not True:
             failures.append("corpus change removed the approved active ANN baseline")
+        if nonempty.get("automatic_refresh_reused_all_vectors") is not True:
+            failures.append("automatic same-profile refresh did not reuse unchanged vectors")
+        if nonempty.get("automatic_refresh_provider_candidates") != 0:
+            failures.append("automatic unchanged-corpus refresh scheduled provider work")
+        if nonempty.get("automatic_refresh_activated") is not True:
+            failures.append("qualified automatic same-profile refresh did not cut over")
+        if nonempty.get("automatic_refresh_cutover_counts") != [
+            0,
+            nonempty.get("automatic_refresh_chunk_count"),
+        ]:
+            failures.append("automatic refresh cutover did not switch serving membership")
+        if nonempty.get("manual_generation_required_operator_activation") is not True:
+            failures.append("automatic cutover accepted an operator-authored generation")
+        if nonempty.get("automatic_refresh_waited_for_processing") is not True:
+            failures.append("automatic refresh started while document processing was open")
         if int(nonempty.get("worker_dispatch_batches", 0)) < 1:
             failures.append("the generation worker scheduler did not dispatch a batch")
         if nonempty.get("attempt_ceiling_failed_generation") is not True:
@@ -140,6 +159,10 @@ def _serving_counts(cursor: Any, generation_ids: list[str]) -> list[int]:
     return counts
 
 
+def _vector_literal(values: list[float]) -> str:
+    return f"[{','.join(str(value) for value in values)}]"
+
+
 def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str, Any]:
     profiles = (
         "embedding-space:v1:local:local-lexical-v2:1536",
@@ -199,11 +222,31 @@ def _run_empty_lifecycle(cursor: Any, tenant_id: str, user_id: str) -> dict[str,
         (tenant_id, user_id),
     )
     stale = _statuses(cursor, [generations[0], stale_generation])
+    automatic_generation_id = start_next_embedding_generation_refresh(
+        cursor,
+        embedding_profile=profiles[0],
+        quiet_period_seconds=0,
+    )
+    if automatic_generation_id is None or not _qualify(
+        cursor, automatic_generation_id
+    ):
+        raise EmbeddingGenerationEvaluationError(
+            "empty revision-lagged workspace did not build an automatic refresh"
+        )
+    automatic_refresh = (
+        activate_next_embedding_generation_refresh(
+            cursor,
+            embedding_profile=profiles[0],
+            rollback_window_hours=168,
+        )
+        == automatic_generation_id
+    )
     return {
         "cutover": cutover,
         "rollback": rollback,
         "stale": stale,
         "forged_report_rejected": forged_report_rejected,
+        "automatic_refresh": automatic_refresh,
     }
 
 
@@ -393,6 +436,14 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             raise EmbeddingGenerationEvaluationError(
                 "complete replacement generation did not seal"
             )
+        manual_generation_required_operator_activation = (
+            activate_next_embedding_generation_refresh(
+                cursor,
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+                rollback_window_hours=168,
+            )
+            is None
+        )
         cursor.execute(
             "SELECT activate_workspace_embedding_generation(%s)",
             (replacement_generation_id,),
@@ -516,8 +567,73 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
         cursor.execute("SET LOCAL enable_seqscan = on")
 
         cursor.execute(
-            "SELECT invalidate_workspace_embedding_scope(%s, %s)",
+            """
+            SELECT version.document_id, version.id, derivation.id,
+                   derivation.processing_generation,
+                   left(parsed.content_text, 48),
+                   COALESCE(MAX(chunk.chunk_index), -1) + 1
+            FROM document_versions AS version
+            JOIN document_derivations AS derivation
+              ON derivation.id = version.current_derivation_id
+            JOIN document_parsed_artifacts AS parsed
+              ON parsed.id = derivation.input_parsed_artifact_id
+            LEFT JOIN chunks AS chunk
+              ON chunk.derivation_id = derivation.id
+            WHERE version.tenant_id = %s
+              AND version.user_id = %s
+              AND version.status = 'ready'
+              AND parsed.status = 'ready'
+              AND char_length(parsed.content_text) >= 1
+            GROUP BY version.document_id, version.id, derivation.id,
+                     derivation.processing_generation, parsed.content_text
+            ORDER BY version.id
+            LIMIT 1
+            """,
             (tenant_id, user_id),
+        )
+        delta_source = cursor.fetchone()
+        if delta_source is None:
+            raise EmbeddingGenerationEvaluationError(
+                "non-empty scope had no parsed artifact for the delta reuse probe"
+            )
+        (
+            delta_document_id,
+            delta_version_id,
+            delta_derivation_id,
+            delta_processing_generation,
+            delta_content,
+            delta_chunk_index,
+        ) = delta_source
+        cursor.execute(
+            """
+            INSERT INTO chunks (
+                id, document_id, document_version_id, derivation_id,
+                tenant_id, user_id, content, embedding, chunk_index,
+                token_count, start_char, end_char, language, metadata,
+                processing_generation, embedded_at, embedding_profile,
+                text_locator_status, text_locator_profile
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s::vector, %s,
+                %s, 0, %s, 'en', '{"evaluation_delta":true}'::jsonb,
+                %s, NOW(), %s, 'exact',
+                'unicode_code_point:zero_based_half_open:v1'
+            )
+            """,
+            (
+                str(uuid.uuid4()),
+                delta_document_id,
+                delta_version_id,
+                delta_derivation_id,
+                tenant_id,
+                user_id,
+                str(delta_content),
+                _vector_literal(local_lexical_embedding(str(delta_content))),
+                int(delta_chunk_index),
+                len(str(delta_content).split()),
+                len(str(delta_content)),
+                delta_processing_generation,
+                LOCAL_EMBEDDING_PROFILE.identifier,
+            ),
         )
         cursor.execute(
             """
@@ -528,6 +644,153 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             (generation_id,),
         )
         post_change_serving_count = int(cursor.fetchone()[0])
+        cursor.execute(
+            """
+            WITH target AS MATERIALIZED (
+                SELECT derivation.id
+                FROM document_derivations AS derivation
+                JOIN document_versions AS version
+                  ON derivation.id = version.current_derivation_id
+                WHERE version.tenant_id = %s
+                  AND version.user_id = %s
+                  AND version.status = 'ready'
+                  AND derivation.status = 'ready'
+                ORDER BY derivation.id
+                LIMIT 1
+            )
+            UPDATE document_derivations AS derivation
+            SET status = 'processing', updated_at = NOW()
+            FROM target
+            WHERE derivation.id = target.id
+            RETURNING derivation.id
+            """,
+            (tenant_id, user_id),
+        )
+        processing_derivation = cursor.fetchone()
+        if processing_derivation is None:
+            raise EmbeddingGenerationEvaluationError(
+                "non-empty scope had no current derivation for the refresh blocker probe"
+            )
+        blocked_refresh_id = start_next_embedding_generation_refresh(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            quiet_period_seconds=0,
+        )
+        cursor.execute(
+            """
+            UPDATE document_derivations
+            SET status = 'ready', updated_at = NOW()
+            WHERE id = %s
+            """,
+            (processing_derivation[0],),
+        )
+        automatic_generation_id = start_next_embedding_generation_refresh(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            quiet_period_seconds=0,
+        )
+        if automatic_generation_id is None:
+            cursor.execute(
+                """
+                SELECT active.status, active.source_corpus_revision, corpus.revision,
+                       (SELECT COUNT(*) FROM workspace_embedding_generations AS open
+                        WHERE open.tenant_id = active.tenant_id
+                          AND open.user_id = active.user_id
+                          AND open.status IN ('building', 'ready')),
+                       (SELECT COUNT(*) FROM document_versions AS version
+                        WHERE version.tenant_id = active.tenant_id
+                          AND version.user_id = active.user_id
+                          AND version.status = 'processing'),
+                       (SELECT COUNT(*)
+                        FROM document_versions AS version
+                        JOIN document_derivations AS derivation
+                          ON derivation.document_version_id = version.id
+                         AND derivation.id IN (
+                              version.current_derivation_id,
+                              version.pending_derivation_id
+                         )
+                        WHERE version.tenant_id = active.tenant_id
+                          AND version.user_id = active.user_id
+                          AND derivation.status = 'processing'),
+                       (SELECT COUNT(*)
+                        FROM document_embedding_jobs AS job
+                        JOIN document_versions AS version
+                          ON version.id = job.document_version_id
+                         AND job.derivation_id IN (
+                              version.current_derivation_id,
+                              version.pending_derivation_id
+                         )
+                        WHERE job.tenant_id = active.tenant_id
+                          AND job.user_id = active.user_id
+                          AND job.status IN (
+                              'pending', 'publishing', 'published', 'processing'
+                          ))
+                FROM workspace_embedding_generations AS active
+                JOIN workspace_embedding_corpus_revisions AS corpus
+                  ON corpus.tenant_id = active.tenant_id
+                 AND corpus.user_id = active.user_id
+                WHERE active.id = %s
+                """,
+                (generation_id,),
+            )
+            refresh_state = cursor.fetchone()
+            raise EmbeddingGenerationEvaluationError(
+                "revision-lagged active generation did not start an automatic refresh; "
+                f"state={refresh_state}"
+            )
+        cursor.execute(
+            """
+            SELECT creation_reason, expected_chunk_count, embedded_chunk_count,
+                   COUNT(*) FILTER (WHERE candidate.status <> 'embedded'),
+                   COUNT(*) FILTER (
+                       WHERE candidate.provider_metadata->>'reuse_source'
+                             = 'active_generation'
+                   ),
+                   COUNT(*) FILTER (
+                       WHERE candidate.provider_metadata->>'reuse_source'
+                             = 'canonical_chunk'
+                   )
+            FROM workspace_embedding_generations AS generation
+            LEFT JOIN chunk_embedding_vectors AS candidate
+              ON candidate.generation_id = generation.id
+            WHERE generation.id = %s
+            GROUP BY generation.creation_reason, generation.expected_chunk_count,
+                     generation.embedded_chunk_count
+            """,
+            (automatic_generation_id,),
+        )
+        (
+            automatic_creation_reason,
+            automatic_expected,
+            automatic_embedded,
+            automatic_provider_candidates,
+            automatic_active_reused,
+            automatic_canonical_reused,
+        ) = cursor.fetchone()
+        if not _qualify(cursor, automatic_generation_id):
+            cursor.execute(
+                """
+                SELECT status, expected_chunk_count, embedded_chunk_count,
+                       failed_chunk_count, evaluation_report
+                FROM workspace_embedding_generations
+                WHERE id = %s
+                """,
+                (automatic_generation_id,),
+            )
+            automatic_state = cursor.fetchone()
+            raise EmbeddingGenerationEvaluationError(
+                "fully reused automatic generation did not qualify; "
+                f"state={automatic_state}"
+            )
+        automatically_activated_id = activate_next_embedding_generation_refresh(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            rollback_window_hours=168,
+        )
+        automatic_refresh_cutover_counts = _serving_counts(
+            cursor,
+            [generation_id, automatic_generation_id],
+        )
         return {
             "skipped": False,
             "chunk_count": expected,
@@ -548,6 +811,29 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             ),
             "active_baseline_retained_after_corpus_change": (
                 post_change_serving_count == expected
+            ),
+            "automatic_refresh_reused_all_vectors": (
+                automatic_creation_reason == "corpus_refresh"
+                and int(automatic_expected) == expected + 1
+                and int(automatic_embedded) == expected + 1
+                and int(automatic_active_reused) == expected
+                and int(automatic_canonical_reused) == 1
+            ),
+            "automatic_refresh_chunk_count": int(automatic_expected),
+            "automatic_refresh_provider_candidates": int(
+                automatic_provider_candidates
+            ),
+            "automatic_refresh_activated": (
+                automatically_activated_id == automatic_generation_id
+            ),
+            "automatic_refresh_cutover_counts": (
+                automatic_refresh_cutover_counts
+            ),
+            "manual_generation_required_operator_activation": (
+                manual_generation_required_operator_activation
+            ),
+            "automatic_refresh_waited_for_processing": (
+                blocked_refresh_id is None
             ),
             "worker_dispatch_batches": worker_dispatch_batches,
             "attempt_ceiling_failed_generation": attempt_ceiling_failed_generation,
@@ -576,10 +862,11 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
                 "061_trusted_embedding_generation_promotion.sql",
                 "062_embedding_generation_scope_serialization.sql",
                 "063_active_generation_delta_serving.sql",
+                "064_automatic_embedding_generation_refresh.sql",
             }
             if not required_migrations.issubset(migrations):
                 raise EmbeddingGenerationEvaluationError(
-                    "trusted promotion migrations 061 through 063 are not applied"
+                    "embedding generation migrations 061 through 064 are not applied"
                 )
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
@@ -596,7 +883,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "063_active_generation_delta_serving.sql",
+                "latest_migration": "064_automatic_embedding_generation_refresh.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,

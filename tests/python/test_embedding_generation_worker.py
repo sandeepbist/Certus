@@ -5,10 +5,12 @@ from services.embedding.app import worker as embedding_worker
 from services.shared.embedding_generation_worker import (
     EmbeddingGenerationCandidate,
     EmbeddingGenerationLeaseLostError,
+    activate_next_embedding_generation_refresh,
     claim_next_embedding_generation_batch,
     qualify_next_embedding_generation,
     record_embedding_generation_batch,
     record_embedding_generation_failure,
+    start_next_embedding_generation_refresh,
 )
 from services.shared.embeddings import EMBEDDING_DIMENSIONS, LOCAL_EMBEDDING_PROFILE
 
@@ -74,6 +76,50 @@ class EmbeddingGenerationWorkerPrimitiveTests(unittest.TestCase):
         self.assertEqual(params[2], LEASE_OWNER)
         self.assertEqual(claimed[0].attempt_count, 2)
         self.assertEqual(claimed[0].embedding_input, "text")
+
+    def test_automatic_refresh_primitives_are_profile_scoped_and_bounded(self):
+        cursor = MagicMock()
+        refresh_id = "40000000-0000-4000-8000-000000000001"
+        cursor.fetchone.side_effect = [(refresh_id,), (GENERATION_ID,)]
+
+        started = start_next_embedding_generation_refresh(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            quiet_period_seconds=30,
+        )
+        activated = activate_next_embedding_generation_refresh(
+            cursor,
+            embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+            rollback_window_hours=168,
+        )
+
+        self.assertEqual(started, refresh_id)
+        self.assertEqual(activated, GENERATION_ID)
+        self.assertIn(
+            "start_next_workspace_embedding_refresh",
+            cursor.execute.call_args_list[0].args[0],
+        )
+        self.assertEqual(
+            cursor.execute.call_args_list[0].args[1],
+            (LOCAL_EMBEDDING_PROFILE.identifier, 30),
+        )
+        self.assertIn(
+            "activate_next_workspace_embedding_refresh",
+            cursor.execute.call_args_list[1].args[0],
+        )
+
+        with self.assertRaises(ValueError):
+            start_next_embedding_generation_refresh(
+                cursor,
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+                quiet_period_seconds=3_601,
+            )
+        with self.assertRaises(ValueError):
+            activate_next_embedding_generation_refresh(
+                cursor,
+                embedding_profile=LOCAL_EMBEDDING_PROFILE.identifier,
+                rollback_window_hours=721,
+            )
 
     def test_success_batch_requires_every_lease_and_one_generation(self):
         cursor = MagicMock()
@@ -171,6 +217,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         with (
             patch.object(
                 embedding_worker,
+                "activate_next_embedding_generation_refresh",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
                 "qualify_next_embedding_generation",
                 return_value=None,
             ),
@@ -188,6 +239,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
                 embedding_worker,
                 "record_embedding_generation_batch",
             ) as record,
+            patch.object(
+                embedding_worker,
+                "start_next_embedding_generation_refresh",
+                return_value=None,
+            ),
         ):
             worked = embedding_worker.process_one_embedding_generation_batch(
                 connection
@@ -208,6 +264,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         with (
             patch.object(
                 embedding_worker,
+                "activate_next_embedding_generation_refresh",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
                 "qualify_next_embedding_generation",
                 return_value=None,
             ),
@@ -226,6 +287,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
                 "record_embedding_generation_failure",
                 return_value=False,
             ) as record_failure,
+            patch.object(
+                embedding_worker,
+                "start_next_embedding_generation_refresh",
+                return_value=None,
+            ),
         ):
             worked = embedding_worker.process_one_embedding_generation_batch(
                 connection
@@ -247,6 +313,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         with (
             patch.object(
                 embedding_worker,
+                "activate_next_embedding_generation_refresh",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
                 "qualify_next_embedding_generation",
                 return_value=None,
             ),
@@ -265,6 +336,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
                 "record_embedding_generation_batch",
                 side_effect=EmbeddingGenerationLeaseLostError("stale"),
             ),
+            patch.object(
+                embedding_worker,
+                "start_next_embedding_generation_refresh",
+                return_value=None,
+            ),
         ):
             worked = embedding_worker.process_one_embedding_generation_batch(
                 connection
@@ -278,6 +354,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         with (
             patch.object(
                 embedding_worker,
+                "activate_next_embedding_generation_refresh",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
                 "qualify_next_embedding_generation",
                 return_value=GENERATION_ID,
             ),
@@ -286,6 +367,11 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
                 "claim_next_embedding_generation_batch",
             ) as claim,
             patch.object(embedding_worker, "get_embeddings") as embed,
+            patch.object(
+                embedding_worker,
+                "start_next_embedding_generation_refresh",
+                return_value=None,
+            ),
         ):
             worked = embedding_worker.process_one_embedding_generation_batch(
                 connection
@@ -294,6 +380,80 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
         self.assertTrue(worked)
         connection.commit.assert_called_once()
         claim.assert_not_called()
+        embed.assert_not_called()
+
+    def test_activates_refresh_before_any_provider_or_queue_work(self):
+        connection = MagicMock()
+        with (
+            patch.object(
+                embedding_worker,
+                "activate_next_embedding_generation_refresh",
+                return_value=GENERATION_ID,
+            ),
+            patch.object(
+                embedding_worker,
+                "qualify_next_embedding_generation",
+            ) as qualify,
+            patch.object(
+                embedding_worker,
+                "claim_next_embedding_generation_batch",
+            ) as claim,
+            patch.object(embedding_worker, "get_embeddings") as embed,
+            patch.object(
+                embedding_worker,
+                "start_next_embedding_generation_refresh",
+            ) as start,
+        ):
+            worked = embedding_worker.process_one_embedding_generation_batch(
+                connection
+            )
+
+        self.assertTrue(worked)
+        connection.commit.assert_called_once()
+        qualify.assert_not_called()
+        claim.assert_not_called()
+        start.assert_not_called()
+        embed.assert_not_called()
+
+    def test_starts_refresh_only_when_existing_generation_work_is_idle(self):
+        connection = MagicMock()
+        refresh_id = "40000000-0000-4000-8000-000000000001"
+        with (
+            patch.object(
+                embedding_worker,
+                "activate_next_embedding_generation_refresh",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
+                "qualify_next_embedding_generation",
+                return_value=None,
+            ),
+            patch.object(
+                embedding_worker,
+                "claim_next_embedding_generation_batch",
+                return_value=[],
+            ),
+            patch.object(
+                embedding_worker,
+                "start_next_embedding_generation_refresh",
+                return_value=refresh_id,
+            ) as start,
+            patch.object(embedding_worker, "get_embeddings") as embed,
+        ):
+            worked = embedding_worker.process_one_embedding_generation_batch(
+                connection
+            )
+
+        self.assertTrue(worked)
+        connection.commit.assert_called_once()
+        start.assert_called_once_with(
+            connection.cursor.return_value.__enter__.return_value,
+            embedding_profile=embedding_worker.ACTIVE_EMBEDDING_PROFILE.identifier,
+            quiet_period_seconds=(
+                embedding_worker.EMBEDDING_GENERATION_REFRESH_QUIET_SECONDS
+            ),
+        )
         embed.assert_not_called()
 
 

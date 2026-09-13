@@ -28,10 +28,12 @@ from services.shared.embeddings import (
 )
 from services.shared.embedding_generation_worker import (
     EmbeddingGenerationLeaseLostError,
+    activate_next_embedding_generation_refresh,
     claim_next_embedding_generation_batch,
     qualify_next_embedding_generation,
     record_embedding_generation_batch,
     record_embedding_generation_failure,
+    start_next_embedding_generation_refresh,
 )
 from services.shared.worker_runtime import (
     WorkerIdentity,
@@ -78,6 +80,12 @@ EMBEDDING_GENERATION_RETRY_BASE_SECONDS = bounded_int_env(
 )
 EMBEDDING_GENERATION_RETRY_MAX_SECONDS = bounded_int_env(
     "EMBEDDING_GENERATION_RETRY_MAX_SECONDS", 3_600, 1, 86_400
+)
+EMBEDDING_GENERATION_REFRESH_QUIET_SECONDS = bounded_int_env(
+    "EMBEDDING_GENERATION_REFRESH_QUIET_SECONDS", 30, 0, 3_600
+)
+EMBEDDING_GENERATION_REFRESH_ROLLBACK_HOURS = bounded_int_env(
+    "EMBEDDING_GENERATION_REFRESH_ROLLBACK_HOURS", 168, 1, 720
 )
 EMBEDDING_GENERATION_RETENTION_DAYS = bounded_retention_days_env(
     "EMBEDDING_GENERATION_RETENTION_DAYS", 30
@@ -1168,12 +1176,22 @@ def process_one_embedding_generation_batch(conn) -> bool:
     lease_owner = str(uuid.uuid4())
     try:
         with conn.cursor() as cursor:
-            qualified_generation_id = qualify_next_embedding_generation(
+            activated_generation_id = activate_next_embedding_generation_refresh(
                 cursor,
                 embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
+                rollback_window_hours=(
+                    EMBEDDING_GENERATION_REFRESH_ROLLBACK_HOURS
+                ),
             )
+            qualified_generation_id = None
             candidates = []
-            if qualified_generation_id is None:
+            started_generation_id = None
+            if activated_generation_id is None:
+                qualified_generation_id = qualify_next_embedding_generation(
+                    cursor,
+                    embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
+                )
+            if activated_generation_id is None and qualified_generation_id is None:
                 candidates = claim_next_embedding_generation_batch(
                     cursor,
                     embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
@@ -1181,15 +1199,41 @@ def process_one_embedding_generation_batch(conn) -> bool:
                     batch_size=EMBEDDING_GENERATION_BATCH_SIZE,
                     lease_seconds=EMBEDDING_GENERATION_LEASE_SECONDS,
                 )
+            if (
+                activated_generation_id is None
+                and qualified_generation_id is None
+                and not candidates
+            ):
+                started_generation_id = start_next_embedding_generation_refresh(
+                    cursor,
+                    embedding_profile=ACTIVE_EMBEDDING_PROFILE.identifier,
+                    quiet_period_seconds=(
+                        EMBEDDING_GENERATION_REFRESH_QUIET_SECONDS
+                    ),
+                )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
 
+    if activated_generation_id is not None:
+        logger.info(
+            "Automatically activated embedding corpus refresh %s",
+            activated_generation_id,
+        )
+        return True
+
     if qualified_generation_id is not None:
         logger.info(
             "Embedding generation %s passed database integrity qualification",
             qualified_generation_id,
+        )
+        return True
+
+    if started_generation_id is not None:
+        logger.info(
+            "Started automatic embedding corpus refresh %s",
+            started_generation_id,
         )
         return True
 
