@@ -201,6 +201,7 @@ def list_embedding_generations(
     items = [_generation_payload(row) for row in rows[:limit]]
     return {
         "generations": items,
+        "supported_profiles": sorted(SUPPORTED_SERVING_EMBEDDING_PROFILES),
         "pagination": {
             "limit": limit,
             "next_cursor": items[-1]["id"] if has_more else None,
