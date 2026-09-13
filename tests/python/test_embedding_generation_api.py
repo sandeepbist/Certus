@@ -33,6 +33,7 @@ def generation_row() -> dict:
         "embedding_profile": (
             "embedding-space:v1:local:local-lexical-v2:1536"
         ),
+        "creation_reason": "operator",
         "source_corpus_revision": 4,
         "current_corpus_revision": 5,
         "status": "building",
@@ -119,6 +120,7 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
         item = response["generations"][0]
         self.assertEqual(item["progress"]["remaining"], 3)
         self.assertFalse(item["corpus"]["is_current"])
+        self.assertEqual(item["creation_reason"], "operator")
         self.assertTrue(item["has_error"])
         self.assertNotIn("last_error", item)
         self.assertNotIn("private_diagnostics", item["evaluation"])

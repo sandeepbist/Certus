@@ -66,6 +66,9 @@ class EmbeddingProfileTests(unittest.TestCase):
         retention = Path(
             "infra/db/migrations/060_embedding_generation_retention.sql"
         ).read_text(encoding="utf-8")
+        automatic_refresh = Path(
+            "infra/db/migrations/064_automatic_embedding_generation_refresh.sql"
+        ).read_text(encoding="utf-8")
 
         for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
             literal = serving_embedding_profile_sql_literal(identifier)
@@ -107,6 +110,11 @@ class EmbeddingProfileTests(unittest.TestCase):
         self.assertIn("prune_embedding_generations", retention)
         self.assertIn("FOR UPDATE SKIP LOCKED", retention)
         self.assertIn("status = 'active'", retention)
+        self.assertIn("creation_reason = 'corpus_refresh'", automatic_refresh)
+        self.assertIn("'reuse_source', 'active_generation'", automatic_refresh)
+        self.assertIn("'reuse_source', 'canonical_chunk'", automatic_refresh)
+        self.assertIn("pg_advisory_xact_lock", automatic_refresh)
+        self.assertIn("version.pending_derivation_id", automatic_refresh)
 
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):

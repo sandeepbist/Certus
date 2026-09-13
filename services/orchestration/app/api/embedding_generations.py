@@ -67,6 +67,7 @@ def _generation_payload(row: Any) -> dict[str, Any]:
     return {
         "id": str(payload["id"]),
         "embedding_profile": payload["embedding_profile"],
+        "creation_reason": payload["creation_reason"],
         "source_corpus_revision": int(payload["source_corpus_revision"]),
         "corpus": {
             "snapshot_revision": int(payload["source_corpus_revision"]),
@@ -102,7 +103,7 @@ def _generation_payload(row: Any) -> dict[str, Any]:
 
 
 GENERATION_SELECT = """
-    SELECT id, embedding_profile, source_corpus_revision, status,
+    SELECT id, embedding_profile, creation_reason, source_corpus_revision, status,
            expected_chunk_count, embedded_chunk_count, failed_chunk_count,
            previous_generation_id, evaluation_report, last_error,
            created_at, updated_at, sealed_at, activated_at, retired_at,

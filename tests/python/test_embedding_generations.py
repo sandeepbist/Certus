@@ -7,13 +7,14 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_complete_report_passes(self):
         report = {
             "schema": {
-                "latest_migration": "063_active_generation_delta_serving.sql"
+                "latest_migration": "064_automatic_embedding_generation_refresh.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
                 "stale": ["active", "stale"],
                 "forged_report_rejected": True,
+                "automatic_refresh": True,
             },
             "nonempty_workspace_lifecycle": {
                 "skipped": False,
@@ -28,6 +29,13 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "cutover_serving_counts": [0, 2],
                 "rollback_serving_counts": [2, 0],
                 "active_baseline_retained_after_corpus_change": True,
+                "automatic_refresh_reused_all_vectors": True,
+                "automatic_refresh_chunk_count": 3,
+                "automatic_refresh_provider_candidates": 0,
+                "automatic_refresh_activated": True,
+                "automatic_refresh_cutover_counts": [0, 3],
+                "manual_generation_required_operator_activation": True,
+                "automatic_refresh_waited_for_processing": True,
                 "chunk_count": 2,
                 "worker_dispatch_batches": 1,
                 "attempt_ceiling_failed_generation": True,
@@ -65,18 +73,19 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
             "run": {"persistent_rows": 1, "provider_calls": 1},
         }
         failures = check_embedding_generation_report(report)
-        self.assertEqual(len(failures), 21)
+        self.assertEqual(len(failures), 28)
 
     def test_empty_database_may_skip_only_the_nonempty_probe(self):
         report = {
             "schema": {
-                "latest_migration": "063_active_generation_delta_serving.sql"
+                "latest_migration": "064_automatic_embedding_generation_refresh.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
                 "rollback": ["active", "rolled_back"],
                 "stale": ["active", "stale"],
                 "forged_report_rejected": True,
+                "automatic_refresh": True,
             },
             "nonempty_workspace_lifecycle": {"skipped": True},
             "run": {"persistent_rows": 0, "provider_calls": 0},

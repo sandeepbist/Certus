@@ -77,6 +77,50 @@ def qualify_next_embedding_generation(
     return generation_id if bool(cursor.fetchone()[0]) else None
 
 
+def activate_next_embedding_generation_refresh(
+    cursor: Any,
+    *,
+    embedding_profile: str,
+    rollback_window_hours: int,
+) -> str | None:
+    """Cut over one qualified, system-authored refresh for its active profile."""
+    profile = parse_embedding_profile(embedding_profile).identifier
+    if not 1 <= rollback_window_hours <= 720:
+        raise ValueError("rollback_window_hours must be between 1 and 720")
+    cursor.execute(
+        """
+        SELECT activate_next_workspace_embedding_refresh(
+            %s, make_interval(hours => %s)
+        )
+        """,
+        (profile, rollback_window_hours),
+    )
+    row = cursor.fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def start_next_embedding_generation_refresh(
+    cursor: Any,
+    *,
+    embedding_profile: str,
+    quiet_period_seconds: int,
+) -> str | None:
+    """Start one stable, revision-lagged refresh for this worker's profile."""
+    profile = parse_embedding_profile(embedding_profile).identifier
+    if not 0 <= quiet_period_seconds <= 3_600:
+        raise ValueError("quiet_period_seconds must be between 0 and 3600")
+    cursor.execute(
+        """
+        SELECT start_next_workspace_embedding_refresh(
+            %s, make_interval(secs => %s)
+        )
+        """,
+        (profile, quiet_period_seconds),
+    )
+    row = cursor.fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
 def claim_next_embedding_generation_batch(
     cursor: Any,
     *,
