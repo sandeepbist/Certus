@@ -121,6 +121,10 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response["pagination"]["next_cursor"], str(GENERATION_ID))
+        self.assertIn(
+            "embedding-space:v1:local:local-lexical-v2:1536",
+            response["supported_profiles"],
+        )
         item = response["generations"][0]
         self.assertEqual(item["progress"]["remaining"], 3)
         self.assertFalse(item["corpus"]["is_current"])

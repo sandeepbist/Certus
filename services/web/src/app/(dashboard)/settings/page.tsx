@@ -20,6 +20,13 @@ import {
 } from 'lucide-react';
 
 import { authClient, useSession } from '@/lib/auth-client';
+import {
+  type EmbeddingGeneration,
+  type EmbeddingGenerationAction,
+  embeddingGenerationActions,
+  embeddingGenerationProgress,
+  embeddingProfileLabel,
+} from '@/lib/embedding-generations';
 import { gatewayFetch } from '@/lib/gateway-client';
 
 type Tab = 'profile' | 'workspace' | 'api-keys' | 'security' | 'preferences' | 'webhooks' | 'data';
@@ -125,6 +132,10 @@ function SettingsContent() {
   const [supportedWebhookEvents, setSupportedWebhookEvents] = useState<string[]>([]);
   const [webhookDeliveries, setWebhookDeliveries] = useState<Record<string, WebhookDelivery[]>>({});
   const [webhookDeliveryCursors, setWebhookDeliveryCursors] = useState<Record<string, string | null>>({});
+  const [embeddingGenerations, setEmbeddingGenerations] = useState<EmbeddingGeneration[]>([]);
+  const [embeddingProfiles, setEmbeddingProfiles] = useState<string[]>([]);
+  const [embeddingProfile, setEmbeddingProfile] = useState('');
+  const [embeddingGenerationBusy, setEmbeddingGenerationBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -199,13 +210,35 @@ function SettingsContent() {
     }));
   };
 
+  const loadEmbeddingGenerations = async () => {
+    const response = await gatewayFetch('/embedding-generations?limit=10');
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readApiMessage(payload, 'Embedding generations could not be loaded.'));
+    }
+    const profiles = Array.isArray(payload?.supported_profiles)
+      ? payload.supported_profiles.filter(
+        (value: unknown): value is string => typeof value === 'string',
+      )
+      : [];
+    setEmbeddingGenerations(Array.isArray(payload?.generations) ? payload.generations : []);
+    setEmbeddingProfiles(profiles);
+    setEmbeddingProfile((current) => current || profiles[0] || '');
+  };
+
   useEffect(() => {
     setDisplayName(session?.user.name || '');
   }, [session?.user.name]);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([loadSettings(), loadApiKeys(), loadSessions(), loadWebhooks()])
+    Promise.all([
+      loadSettings(),
+      loadApiKeys(),
+      loadSessions(),
+      loadWebhooks(),
+      loadEmbeddingGenerations(),
+    ])
       .catch((error) => {
         if (!cancelled) setPageError(error instanceof Error ? error.message : 'Settings could not be loaded.');
       })
@@ -538,6 +571,88 @@ function SettingsContent() {
     }
   };
 
+  const startEmbeddingGeneration = async () => {
+    if (!embeddingProfile) return;
+    setEmbeddingGenerationBusy('start');
+    try {
+      const response = await gatewayFetch('/embedding-generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ embedding_profile: embeddingProfile }),
+      }, { profile: 'processing' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(readApiMessage(payload, 'Embedding generation could not be started.'));
+      }
+      await loadEmbeddingGenerations();
+      showNotice('Embedding generation started. Completed work is durable across restarts.');
+    } catch (error) {
+      showError(error, 'Embedding generation could not be started.');
+    } finally {
+      setEmbeddingGenerationBusy(null);
+    }
+  };
+
+  const runEmbeddingGenerationAction = async (
+    generation: EmbeddingGeneration,
+    action: EmbeddingGenerationAction,
+  ) => {
+    const warnings: Partial<Record<EmbeddingGenerationAction, string>> = {
+      cancel: 'Cancel this build? Completed candidates will remain only until terminal cleanup.',
+      activate: 'Activate this generation? Database integrity passed, but semantic quality is not automatically certified.',
+      rollback: 'Roll back to the retained predecessor generation?',
+    };
+    const warning = warnings[action];
+    if (warning && !window.confirm(warning)) return;
+
+    setEmbeddingGenerationBusy(generation.id);
+    try {
+      const requestBody = action === 'pause'
+        ? { reason: 'Paused from workspace settings.' }
+        : action === 'activate'
+          ? { rollback_window_hours: 168 }
+          : undefined;
+      const response = await gatewayFetch(
+        `/embedding-generations/${encodeURIComponent(generation.id)}/${action}`,
+        {
+          method: 'POST',
+          ...(requestBody
+            ? {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+              }
+            : {}),
+        },
+        { profile: 'processing' },
+      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(readApiMessage(payload, `Generation could not ${action}.`));
+      }
+      await loadEmbeddingGenerations();
+      const notices: Record<EmbeddingGenerationAction, string> = {
+        pause: 'Embedding generation paused.',
+        resume: 'Embedding generation resumed.',
+        cancel: 'Embedding generation cancelled.',
+        activate: 'Embedding generation activated.',
+        rollback: 'Embedding generation rolled back.',
+      };
+      showNotice(notices[action]);
+    } catch (error) {
+      showError(error, `Generation could not ${action}.`);
+    } finally {
+      setEmbeddingGenerationBusy(null);
+    }
+  };
+
+  const canManageEmbeddingGenerations = settings
+    ? ['owner', 'admin'].includes(settings.role.toLowerCase())
+    : false;
+  const selectedProfileHasOpenGeneration = embeddingGenerations.some(
+    (generation) => generation.embedding_profile === embeddingProfile
+      && ['building', 'paused', 'ready'].includes(generation.status),
+  );
+
   const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'workspace', label: 'Workspace', icon: Building },
@@ -637,6 +752,122 @@ function SettingsContent() {
                 <Fact label="Enforced daily agent budget" value={(settings.max_token_budget_daily ?? 100000).toLocaleString()} />
               </div>
               <p className="text-[11px] text-zinc-500">Document, retained-original, and embedding rebuild limits are enforced by PostgreSQL. In-flight upload reservations are included in usage.</p>
+              <div className="pt-4 border-t border-zinc-800 space-y-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h3 className="text-xs font-semibold text-zinc-100">Embedding generations</h3>
+                    <p className="mt-1 text-[11px] text-zinc-500">Build and switch immutable search indexes without replacing the active index in place.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => loadEmbeddingGenerations().catch((error) => showError(error, 'Embedding generations could not be refreshed.'))}
+                    disabled={embeddingGenerationBusy !== null}
+                    className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-white disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Refresh
+                  </button>
+                </div>
+
+                {canManageEmbeddingGenerations && (
+                  <div className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 sm:flex-row sm:items-end">
+                    <label className="min-w-0 flex-1 text-[10px] text-zinc-500">
+                      New generation profile
+                      <select
+                        value={embeddingProfile}
+                        onChange={(event) => setEmbeddingProfile(event.target.value)}
+                        className={inputClass}
+                        disabled={embeddingGenerationBusy !== null || embeddingProfiles.length === 0}
+                      >
+                        {embeddingProfiles.map((profile) => (
+                          <option key={profile} value={profile}>{embeddingProfileLabel(profile)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={startEmbeddingGeneration}
+                      disabled={
+                        embeddingGenerationBusy !== null
+                        || !embeddingProfile
+                        || selectedProfileHasOpenGeneration
+                      }
+                      className="rounded-lg bg-white px-3.5 py-2 text-xs font-medium text-black hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {embeddingGenerationBusy === 'start'
+                        ? 'Starting…'
+                        : selectedProfileHasOpenGeneration
+                          ? 'Generation open'
+                          : 'Start generation'}
+                    </button>
+                  </div>
+                )}
+
+                <p className="text-[10px] text-zinc-500">Only start a hosted profile when a compatible embedding worker and provider key are configured. Activation confirms structural integrity; it does not claim semantic quality.</p>
+
+                {embeddingGenerations.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-zinc-800 p-4 text-center text-[11px] text-zinc-500">No embedding generation history yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {embeddingGenerations.map((generation) => {
+                      const progress = embeddingGenerationProgress(generation);
+                      const actions = embeddingGenerationActions(
+                        generation,
+                        canManageEmbeddingGenerations,
+                      );
+                      return (
+                        <div key={generation.id} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2.5">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-xs font-medium text-zinc-100">{embeddingProfileLabel(generation.embedding_profile)}</span>
+                                <span className={embeddingGenerationStatusClass(generation.status)}>{generation.status.replaceAll('_', ' ')}</span>
+                                <span className="text-[10px] text-zinc-500">{generation.creation_reason === 'corpus_refresh' ? 'Automatic refresh' : 'Operator build'}</span>
+                              </div>
+                              <p className="mt-1 text-[10px] font-mono text-zinc-600 break-all">{generation.id}</p>
+                            </div>
+                            <p className="text-[10px] text-zinc-500 whitespace-nowrap">Updated {new Date(generation.updated_at).toLocaleString()}</p>
+                          </div>
+
+                          <div>
+                            <div className="mb-1 flex items-center justify-between text-[10px] text-zinc-500">
+                              <span>{generation.progress.embedded.toLocaleString()} / {generation.progress.expected.toLocaleString()} embedded</span>
+                              <span>{progress}%</span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                              <div className="h-full rounded-full bg-emerald-500 transition-[width]" style={{ width: `${progress}%` }} />
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-500">
+                            <span>Corpus revision {generation.corpus.snapshot_revision.toLocaleString()}</span>
+                            <span>{generation.corpus.is_current ? 'Current corpus' : `Behind revision ${generation.corpus.current_revision.toLocaleString()}`}</span>
+                            {generation.progress.failed > 0 && <span className="text-amber-400">{generation.progress.failed.toLocaleString()} failed</span>}
+                            {generation.evaluation?.quality_claim && <span>Quality: {generation.evaluation.quality_claim.replaceAll('_', ' ')}</span>}
+                            {generation.last_pause_reason && <span>Pause: {generation.last_pause_reason}</span>}
+                            {generation.has_error && <span className="text-red-400">Action required</span>}
+                          </div>
+
+                          {actions.length > 0 && (
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              {actions.map((action) => (
+                                <button
+                                  key={action}
+                                  type="button"
+                                  onClick={() => runEmbeddingGenerationAction(generation, action)}
+                                  disabled={embeddingGenerationBusy !== null}
+                                  className="rounded-md border border-zinc-700 px-2.5 py-1 text-[10px] text-zinc-300 hover:border-zinc-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {embeddingGenerationBusy === generation.id ? 'Working…' : embeddingGenerationActionLabel(action)}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
               <div>
                 <p className="text-[10px] text-zinc-500">Workspace ID</p>
                 <p className="mt-1 text-[11px] font-mono text-zinc-400 break-all">{settings.organization_id}</p>
@@ -943,6 +1174,44 @@ function Fact({ label, value }: { label: string; value: string }) {
       <p className="text-xs font-medium text-zinc-100 mt-1 break-all">{value}</p>
     </div>
   );
+}
+
+function readApiMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.message === 'string') return record.message;
+  if (typeof record.detail === 'string') return record.detail;
+  if (record.detail && typeof record.detail === 'object') {
+    const detail = record.detail as Record<string, unknown>;
+    if (typeof detail.message === 'string') return detail.message;
+  }
+  return fallback;
+}
+
+function embeddingGenerationStatusClass(status: EmbeddingGeneration['status']) {
+  const tone = status === 'active'
+    ? 'border-emerald-800 bg-emerald-950/50 text-emerald-300'
+    : status === 'ready'
+      ? 'border-sky-800 bg-sky-950/50 text-sky-300'
+      : status === 'building'
+        ? 'border-amber-800 bg-amber-950/50 text-amber-300'
+        : status === 'paused'
+          ? 'border-violet-800 bg-violet-950/50 text-violet-300'
+          : status === 'failed'
+            ? 'border-red-900 bg-red-950/50 text-red-300'
+            : 'border-zinc-700 bg-zinc-900 text-zinc-400';
+  return `rounded-full border px-2 py-0.5 text-[9px] font-medium capitalize ${tone}`;
+}
+
+function embeddingGenerationActionLabel(action: EmbeddingGenerationAction) {
+  const labels: Record<EmbeddingGenerationAction, string> = {
+    pause: 'Pause',
+    resume: 'Resume',
+    cancel: 'Cancel',
+    activate: 'Activate',
+    rollback: 'Roll back',
+  };
+  return labels[action];
 }
 
 function formatCountSum(first: string, second: string) {
