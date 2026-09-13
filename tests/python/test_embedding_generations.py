@@ -7,7 +7,7 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
     def test_complete_report_passes(self):
         report = {
             "schema": {
-                "latest_migration": "065_embedding_generation_pause_resume.sql"
+                "latest_migration": "066_embedding_generation_capacity.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],
@@ -40,6 +40,9 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
                 "pause_released_inflight_lease": True,
                 "paused_claim_blocked": True,
                 "resume_reopened_generation": True,
+                "generation_chunk_limit_rejected": True,
+                "generation_capacity_trigger_enforced": True,
+                "tenant_inflight_limit_enforced": True,
                 "chunk_count": 2,
                 "worker_dispatch_batches": 1,
                 "attempt_ceiling_failed_generation": True,
@@ -77,12 +80,12 @@ class EmbeddingGenerationReportTests(unittest.TestCase):
             "run": {"persistent_rows": 1, "provider_calls": 1},
         }
         failures = check_embedding_generation_report(report)
-        self.assertEqual(len(failures), 32)
+        self.assertEqual(len(failures), 35)
 
     def test_empty_database_may_skip_only_the_nonempty_probe(self):
         report = {
             "schema": {
-                "latest_migration": "065_embedding_generation_pause_resume.sql"
+                "latest_migration": "066_embedding_generation_capacity.sql"
             },
             "empty_workspace_lifecycle": {
                 "cutover": ["retired", "active"],

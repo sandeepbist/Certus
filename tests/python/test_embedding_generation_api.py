@@ -185,6 +185,48 @@ class EmbeddingGenerationApiTests(unittest.TestCase):
         self.assertEqual(cursor.statements[0][1][:2], ("tenant-proof", "user-proof"))
         self.assertEqual(response["generation"]["id"], str(GENERATION_ID))
 
+    def test_start_reports_database_owned_chunk_capacity(self):
+        cursor = FakeCursor(
+            fetchones=[
+                {"generation_id": None},
+                {"eligible_chunk_count": 101, "chunk_limit": 100},
+            ],
+        )
+        request = embedding_generations.StartEmbeddingGenerationRequest(
+            embedding_profile=(
+                "embedding-space:v1:local:local-lexical-v2:1536"
+            )
+        )
+        with patch.object(
+            embedding_generations,
+            "get_db_cursor",
+            return_value=cursor_context(cursor),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                embedding_generations.start_embedding_generation(
+                    request=request,
+                    identity=IDENTITY,
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            raised.exception.detail,
+            {
+                "code": "embedding_generation_quota_exceeded",
+                "dimension": "chunks",
+                "usage": 101,
+                "limit": 100,
+                "message": (
+                    "This workspace corpus exceeds the configured "
+                    "embedding-generation chunk limit."
+                ),
+            },
+        )
+        self.assertIn(
+            "inspect_workspace_embedding_generation_capacity",
+            cursor.statements[1][0],
+        )
+
     def test_cancel_and_rollback_fail_closed_on_scope_or_state(self):
         missing = FakeCursor(fetchones=[None, None])
         with patch.object(

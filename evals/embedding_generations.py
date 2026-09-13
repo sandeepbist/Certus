@@ -30,9 +30,9 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if (
         report.get("schema", {}).get("latest_migration")
-        != "065_embedding_generation_pause_resume.sql"
+        != "066_embedding_generation_capacity.sql"
     ):
-        failures.append("migration 065 is not the active embedding-generation contract")
+        failures.append("migration 066 is not the active embedding-generation contract")
     lifecycle = report.get("empty_workspace_lifecycle", {})
     if lifecycle.get("cutover") != ["retired", "active"]:
         failures.append("atomic cutover did not retire the previous generation")
@@ -93,6 +93,12 @@ def check_embedding_generation_report(report: dict[str, Any]) -> list[str]:
             failures.append("a paused generation admitted candidate work")
         if nonempty.get("resume_reopened_generation") is not True:
             failures.append("a current paused generation did not resume")
+        if nonempty.get("generation_chunk_limit_rejected") is not True:
+            failures.append("an over-capacity embedding generation was admitted")
+        if nonempty.get("generation_capacity_trigger_enforced") is not True:
+            failures.append("the final generation capacity trigger was bypassed")
+        if nonempty.get("tenant_inflight_limit_enforced") is not True:
+            failures.append("tenant-wide generation provider capacity was exceeded")
         if int(nonempty.get("worker_dispatch_batches", 0)) < 1:
             failures.append("the generation worker scheduler did not dispatch a batch")
         if nonempty.get("attempt_ceiling_failed_generation") is not True:
@@ -344,6 +350,47 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
     cursor.execute("SAVEPOINT nonempty_generation_contract")
     try:
         cursor.execute(
+            """
+            INSERT INTO tenant_config (
+                organization_id, max_embedding_generation_chunks,
+                max_embedding_generation_inflight_chunks
+            ) VALUES (%s, 0, 1)
+            ON CONFLICT (organization_id) DO UPDATE
+            SET max_embedding_generation_chunks = EXCLUDED.max_embedding_generation_chunks,
+                max_embedding_generation_inflight_chunks =
+                    EXCLUDED.max_embedding_generation_inflight_chunks,
+                updated_at = NOW()
+            """,
+            (tenant_id,),
+        )
+        cursor.execute("SAVEPOINT generation_capacity_trigger_contract")
+        try:
+            cursor.execute(
+                "SELECT start_workspace_embedding_generation_snapshot(%s, %s, %s)",
+                (tenant_id, user_id, LOCAL_EMBEDDING_PROFILE.identifier),
+            )
+        except psycopg2.Error as error:
+            generation_capacity_trigger_enforced = error.pgcode == "P2001"
+            cursor.execute("ROLLBACK TO SAVEPOINT generation_capacity_trigger_contract")
+        else:
+            cursor.execute("ROLLBACK TO SAVEPOINT generation_capacity_trigger_contract")
+            generation_capacity_trigger_enforced = False
+        cursor.execute(
+            "SELECT start_workspace_embedding_generation(%s, %s, %s)",
+            (tenant_id, user_id, LOCAL_EMBEDDING_PROFILE.identifier),
+        )
+        generation_chunk_limit_rejected = cursor.fetchone()[0] is None
+        cursor.execute(
+            """
+            UPDATE tenant_config
+            SET max_embedding_generation_chunks = 100000,
+                max_embedding_generation_inflight_chunks = 1,
+                updated_at = NOW()
+            WHERE organization_id = %s
+            """,
+            (tenant_id,),
+        )
+        cursor.execute(
             "SELECT start_workspace_embedding_generation(%s, %s, %s)",
             (
                 tenant_id,
@@ -355,10 +402,20 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
         first_owner = str(uuid.uuid4())
         second_owner = str(uuid.uuid4())
         cursor.execute(
-            "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 1, 60)",
+            "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 100, 60)",
             (generation_id, first_owner),
         )
-        first_chunk = str(cursor.fetchone()[0])
+        first_claim = cursor.fetchall()
+        if len(first_claim) != 1:
+            raise EmbeddingGenerationEvaluationError(
+                "tenant in-flight capacity did not bound the first claim"
+            )
+        first_chunk = str(first_claim[0][0])
+        cursor.execute(
+            "SELECT chunk_id FROM claim_chunk_embedding_vectors(%s, %s, 100, 60)",
+            (generation_id, second_owner),
+        )
+        tenant_inflight_limit_enforced = cursor.fetchone() is None
         cursor.execute("SELECT embedding::text FROM chunks WHERE id = %s", (first_chunk,))
         first_vector = str(cursor.fetchone()[0])
         cursor.execute(
@@ -938,6 +995,11 @@ def _run_nonempty_lifecycle(cursor: Any) -> dict[str, Any]:
             "pause_released_inflight_lease": pause_released_inflight_lease,
             "paused_claim_blocked": paused_claim_blocked,
             "resume_reopened_generation": resume_reopened_generation,
+            "generation_chunk_limit_rejected": generation_chunk_limit_rejected,
+            "generation_capacity_trigger_enforced": (
+                generation_capacity_trigger_enforced
+            ),
+            "tenant_inflight_limit_enforced": tenant_inflight_limit_enforced,
             "worker_dispatch_batches": worker_dispatch_batches,
             "attempt_ceiling_failed_generation": attempt_ceiling_failed_generation,
             "integrity_rejected_zero_vectors": integrity_rejected_zero_vectors,
@@ -967,10 +1029,11 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
                 "063_active_generation_delta_serving.sql",
                 "064_automatic_embedding_generation_refresh.sql",
                 "065_embedding_generation_pause_resume.sql",
+                "066_embedding_generation_capacity.sql",
             }
             if not required_migrations.issubset(migrations):
                 raise EmbeddingGenerationEvaluationError(
-                    "embedding generation migrations 061 through 065 are not applied"
+                    "embedding generation migrations 061 through 066 are not applied"
                 )
             empty_lifecycle = _run_empty_lifecycle(
                 cursor, evaluation_tenant, evaluation_user
@@ -987,7 +1050,7 @@ def run_embedding_generation_evaluation(database_url: str) -> dict[str, Any]:
         return {
             "schema": {
                 "migrations": migrations,
-                "latest_migration": "065_embedding_generation_pause_resume.sql",
+                "latest_migration": "066_embedding_generation_capacity.sql",
             },
             "empty_workspace_lifecycle": empty_lifecycle,
             "nonempty_workspace_lifecycle": nonempty_lifecycle,
