@@ -70,6 +70,7 @@ def main() -> int:
         nonempty_contract = "skipped" if nonempty.get("skipped") else "pass"
         automatic_refresh = "skipped" if nonempty.get("skipped") else "pass"
         pause_resume = "skipped" if nonempty.get("skipped") else "pass"
+        capacity = "skipped" if nonempty.get("skipped") else "pass"
         print(
             "embedding generation evaluation: "
             f"nonempty-chunks={coverage} "
@@ -78,6 +79,7 @@ def main() -> int:
             f"attempt-ceiling={attempt_ceiling} "
             f"automatic-refresh={automatic_refresh} "
             f"pause-resume={pause_resume} "
+            f"capacity={capacity} "
             f"cutover=pass vector-cutover={nonempty_contract} rollback=pass "
             f"stale-fence=pass lease-owner={nonempty_contract} "
             "persistent-rows=0 provider-calls=0"

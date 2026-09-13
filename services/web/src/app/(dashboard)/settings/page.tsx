@@ -32,6 +32,8 @@ type SettingsRecord = {
   plan: string | null;
   max_documents: number | null;
   max_storage_bytes: string | null;
+  max_embedding_generation_chunks: number | null;
+  max_embedding_generation_inflight_chunks: number | null;
   committed_documents: string;
   reserved_documents: string;
   committed_original_bytes: string;
@@ -620,9 +622,21 @@ function SettingsContent() {
                     settings.reserved_original_bytes,
                   )} / ${settings.max_storage_bytes === null ? 'Unlimited' : formatBytes(settings.max_storage_bytes)}`}
                 />
+                <Fact
+                  label="Chunks per embedding rebuild"
+                  value={settings.max_embedding_generation_chunks === null
+                    ? 'Unlimited'
+                    : settings.max_embedding_generation_chunks.toLocaleString()}
+                />
+                <Fact
+                  label="Concurrent rebuild candidates"
+                  value={settings.max_embedding_generation_inflight_chunks === null
+                    ? 'Unlimited'
+                    : settings.max_embedding_generation_inflight_chunks.toLocaleString()}
+                />
                 <Fact label="Enforced daily agent budget" value={(settings.max_token_budget_daily ?? 100000).toLocaleString()} />
               </div>
-              <p className="text-[11px] text-zinc-500">Document and retained-original limits are enforced atomically before upload. In-flight reservations are included in usage.</p>
+              <p className="text-[11px] text-zinc-500">Document, retained-original, and embedding rebuild limits are enforced by PostgreSQL. In-flight upload reservations are included in usage.</p>
               <div>
                 <p className="text-[10px] text-zinc-500">Workspace ID</p>
                 <p className="mt-1 text-[11px] font-mono text-zinc-400 break-all">{settings.organization_id}</p>

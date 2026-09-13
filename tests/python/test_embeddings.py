@@ -72,6 +72,9 @@ class EmbeddingProfileTests(unittest.TestCase):
         pause_resume = Path(
             "infra/db/migrations/065_embedding_generation_pause_resume.sql"
         ).read_text(encoding="utf-8")
+        generation_capacity = Path(
+            "infra/db/migrations/066_embedding_generation_capacity.sql"
+        ).read_text(encoding="utf-8")
 
         for identifier in SUPPORTED_SERVING_EMBEDDING_PROFILES:
             literal = serving_embedding_profile_sql_literal(identifier)
@@ -123,6 +126,10 @@ class EmbeddingProfileTests(unittest.TestCase):
         self.assertIn("status = 'pending', lease_owner = NULL", pause_resume)
         self.assertIn("source_corpus_revision", pause_resume)
         self.assertIn("pg_advisory_xact_lock", pause_resume)
+        self.assertIn("max_embedding_generation_chunks", generation_capacity)
+        self.assertIn("max_embedding_generation_inflight_chunks", generation_capacity)
+        self.assertIn("trg_enforce_workspace_embedding_generation_capacity", generation_capacity)
+        self.assertIn("certus:embedding-generation-capacity:", generation_capacity)
 
     def test_local_profile_is_stable_without_a_usable_provider_key(self):
         for api_key in ("", "placeholder-not-a-key", "test-key"):

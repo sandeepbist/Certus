@@ -41,6 +41,12 @@ async function loadSettings(tenantId: string, userId: string) {
             config.plan,
             config.max_documents,
             config.max_storage_bytes,
+            CASE WHEN config.organization_id IS NULL THEN 100000
+                 ELSE config.max_embedding_generation_chunks
+            END AS max_embedding_generation_chunks,
+            CASE WHEN config.organization_id IS NULL THEN 100
+                 ELSE config.max_embedding_generation_inflight_chunks
+            END AS max_embedding_generation_inflight_chunks,
             COALESCE(usage.committed_documents, 0)::bigint AS committed_documents,
             COALESCE(usage.reserved_documents, 0)::bigint AS reserved_documents,
             COALESCE(usage.committed_original_bytes, 0)::bigint AS committed_original_bytes,

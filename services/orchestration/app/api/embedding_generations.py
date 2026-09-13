@@ -232,6 +232,7 @@ def start_embedding_generation(
     request: StartEmbeddingGenerationRequest,
     identity: RequestIdentity = Depends(require_request_identity),
 ):
+    capacity = None
     try:
         with get_db_cursor() as cursor:
             cursor.execute(
@@ -246,20 +247,51 @@ def start_embedding_generation(
                     request.embedding_profile,
                 ),
             )
-            generation_id = str(cursor.fetchone()["generation_id"])
-            cursor.execute(
-                f"""
-                {GENERATION_SELECT}
-                WHERE id = %s AND tenant_id = %s AND user_id = %s
-                """,
-                (generation_id, identity.tenant_id, identity.user_id),
-            )
-            row = cursor.fetchone()
+            generation_result = cursor.fetchone()
+            generation_id = generation_result["generation_id"]
+            if generation_id is None:
+                cursor.execute(
+                    """
+                    SELECT eligible_chunk_count, chunk_limit
+                    FROM inspect_workspace_embedding_generation_capacity(%s, %s)
+                    """,
+                    (identity.tenant_id, identity.user_id),
+                )
+                capacity = cursor.fetchone()
+                row = None
+            else:
+                generation_id = str(generation_id)
+                cursor.execute(
+                    f"""
+                    {GENERATION_SELECT}
+                    WHERE id = %s AND tenant_id = %s AND user_id = %s
+                    """,
+                    (generation_id, identity.tenant_id, identity.user_id),
+                )
+                row = cursor.fetchone()
     except psycopg2.errors.UniqueViolation as error:
         raise HTTPException(
             status_code=409,
             detail="A build for this embedding profile is already open.",
         ) from error
+    if capacity is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "embedding_generation_quota_exceeded",
+                "dimension": "chunks",
+                "usage": int(capacity["eligible_chunk_count"]),
+                "limit": (
+                    int(capacity["chunk_limit"])
+                    if capacity["chunk_limit"] is not None
+                    else None
+                ),
+                "message": (
+                    "This workspace corpus exceeds the configured "
+                    "embedding-generation chunk limit."
+                ),
+            },
+        )
     if not row:
         raise HTTPException(status_code=500, detail="Embedding generation was not created")
     return {"generation": _generation_payload(row)}

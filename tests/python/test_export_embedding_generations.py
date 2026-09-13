@@ -51,16 +51,23 @@ class ExportCursor:
 
 
 class ExportEmbeddingGenerationTests(unittest.TestCase):
-    def test_schema_v11_exports_control_and_rebuild_provenance_without_vectors(self):
+    def test_schema_v12_exports_control_and_rebuild_provenance_without_vectors(self):
         cursor = ExportCursor()
 
         data = export_api._collect_export_data(cursor, IDENTITY)
 
-        self.assertEqual(export_api.EXPORT_SCHEMA_VERSION, 11)
+        self.assertEqual(export_api.EXPORT_SCHEMA_VERSION, 12)
         self.assertEqual(data["embedding_generations"][0]["status"], "active")
         self.assertEqual(
             data["embedding_generations"][0]["creation_reason"], "operator"
         )
+        config_sql = next(
+            statement
+            for statement, _ in cursor.statements
+            if "FROM tenant_config" in statement
+        )
+        self.assertIn("max_embedding_generation_chunks", config_sql)
+        self.assertIn("max_embedding_generation_inflight_chunks", config_sql)
         manifest = data["chunk_embedding_vector_manifests"][0]
         self.assertFalse(manifest["embedding_payload_included"])
         generation_sql = next(
