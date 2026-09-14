@@ -5,6 +5,7 @@
 
   <p>
     <a href="https://github.com/sandeepbist/Certus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/sandeepbist/Certus/actions/workflows/ci.yml/badge.svg"></a>
+    <a href="https://m8ven.ai/mcp/sandeepbist/certus"><img alt="M8ven Trust Index" src="https://m8ven.ai/badge/mcp/sandeepbist/certus"></a>
     <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-f4f4f5?labelColor=18181b"></a>
     <img alt="Bun" src="https://img.shields.io/badge/Bun-1.4+-f4f4f5?logo=bun&logoColor=white&labelColor=18181b">
     <img alt="Python" src="https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white">
