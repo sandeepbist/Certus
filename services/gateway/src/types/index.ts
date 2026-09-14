@@ -46,6 +46,20 @@ export interface WsServerMessage {
     claim_ids?: string[];
     support_scope?: 'retrieved_context_not_claim_aligned' | 'atomic_claim_selected';
     verification_status?: 'mechanical_checks_passed_semantic_not_evaluated';
+    claim_span_profile?: 'certus_claim_aligned_sentence_span:unicode_code_point:v1';
+    claim_spans?: Array<{
+      claim_id: string;
+      profile: 'certus_claim_aligned_sentence_span:unicode_code_point:v1';
+      selection_status: 'claim_aligned' | 'full_chunk_fallback';
+      quote: string;
+      quote_sha256: string;
+      relative_start_char: number;
+      relative_end_char: number;
+      start_char?: number | null;
+      end_char?: number | null;
+      text_locator_status: 'exact' | 'unavailable';
+      semantic_entailment_checked: false;
+    }>;
     content_hash: string;
     source_time?: string | null;
     recorded_at?: string;
@@ -58,6 +72,7 @@ export interface WsServerMessage {
       source_id: string;
       source_kind: 'document' | 'memory' | 'graph' | 'tool';
       content_sha256: string;
+      claim_span_sha256?: string;
     }>;
     mechanical_validation: {
       status: 'passed';

@@ -39,7 +39,7 @@ def chunk(**overrides):
         "page_number": 4,
         "content_hash": "a" * 64,
         "start_char": 10,
-        "end_char": 95,
+        "end_char": 93,
         "text_locator_status": "exact",
         "text_locator_profile": "unicode_code_point:zero_based_half_open:v1",
         "source_time": "2026-01-01T00:00:00+00:00",
@@ -89,8 +89,80 @@ class AtomicGroundingTests(unittest.TestCase):
         self.assertEqual(result["answer_status"], "answered")
         self.assertEqual([citation["evidence_id"] for citation in result["citations"]], ["D1"])
         self.assertEqual(result["citations"][0]["claim_ids"], ["C1"])
+        self.assertEqual(
+            result["citations"][0]["claim_spans"][0]["quote"],
+            "The approved research budget is USD 42.50 for 2027.",
+        )
+        self.assertEqual(result["citations"][0]["claim_spans"][0]["start_char"], 10)
+        self.assertEqual(
+            result["citations"][0]["claim_spans"][0]["end_char"],
+            10 + len("The approved research budget is USD 42.50 for 2027."),
+        )
+        self.assertEqual(
+            result["claims"][0]["source_refs"][0]["claim_span_sha256"],
+            result["citations"][0]["claim_spans"][0]["quote_sha256"],
+        )
         self.assertEqual(result["claims"][0]["semantic_support_status"], "not_evaluated")
         self.assertIn("[1]", result["response"])
+
+    def test_selects_a_distinct_smallest_span_for_each_claim_on_one_chunk(self):
+        content = (
+            "Administrative preface. The approved budget is 42 credits. "
+            "Remote access is not permitted. Unrelated appendix."
+        )
+        pack = build_evidence_pack(
+            [chunk(content=content, start_char=100, end_char=100 + len(content))],
+            [],
+        )
+        result = validate_answer_proposal(
+            {
+                "status": "answer",
+                "claims": [
+                    {"text": "The approved budget is 42 credits.", "source_ids": ["D1"]},
+                    {"text": "Remote access is not permitted.", "source_ids": ["D1"]},
+                ],
+            },
+            pack,
+        )
+
+        citation = result["citations"][0]
+        self.assertEqual(citation["claim_ids"], ["C1", "C2"])
+        self.assertEqual(
+            [span["quote"] for span in citation["claim_spans"]],
+            ["The approved budget is 42 credits.", "Remote access is not permitted."],
+        )
+        self.assertTrue(all(
+            span["selection_status"] == "claim_aligned"
+            for span in citation["claim_spans"]
+        ))
+        self.assertEqual(
+            citation["claim_spans"][0]["start_char"],
+            100 + content.index("The approved"),
+        )
+
+    def test_uses_a_full_chunk_fallback_when_no_mechanical_signal_can_be_narrowed(self):
+        content = "It is. Administrative appendix."
+        pack = build_evidence_pack(
+            [chunk(content=content, start_char=0, end_char=len(content))],
+            [],
+        )
+        result = validate_answer_proposal(
+            {"status": "answer", "claims": [{"text": "It is.", "source_ids": ["D1"]}]},
+            pack,
+        )
+
+        span = result["citations"][0]["claim_spans"][0]
+        self.assertEqual(span["selection_status"], "full_chunk_fallback")
+        self.assertEqual(span["quote"], content)
+        self.assertFalse(span["semantic_entailment_checked"])
+
+    def test_rejects_an_inconsistent_exact_chunk_locator(self):
+        pack = build_evidence_pack([chunk(end_char=999)], [])
+        with self.assertRaisesRegex(GroundingValidationError, "inconsistent chunk text bounds"):
+            validate_answer_proposal(
+                {"status": "answer", "claims": [{"text": "The budget is 42.50.", "source_ids": ["D1"]}]},
+                pack,
+            )
 
     def test_rejects_unknown_source_ids(self):
         with self.assertRaisesRegex(GroundingValidationError, "unknown"):
