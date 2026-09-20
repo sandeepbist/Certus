@@ -47,6 +47,7 @@ from app.reconciler_runtime import UploadReconcilerConfig, upload_reconciler_is_
 from services.shared.admission import AdmissionCapacityExceeded, AsyncAdmissionController
 from services.shared.embeddings import configured_embedding_profile
 from services.shared.embedding_registry import register_embedding_profile
+from services.shared.safe_errors import safe_error_summary
 from services.shared.worker_runtime import bounded_int_env, connect_database
 from services.shared.object_storage import (
     ObjectConflictError,
@@ -120,8 +121,12 @@ async def application_lifespan(_application: FastAPI):
             ):
                 try:
                     await asyncio.to_thread(close_resource)
-                except Exception:
-                    logger.exception("Could not close ingestion %s resources", resource_name)
+                except Exception as error:
+                    logger.error(
+                        "Could not close ingestion %s resources: %s",
+                        resource_name,
+                        safe_error_summary(error, operation="ingestion resource shutdown"),
+                    )
 
 
 app = FastAPI(
@@ -1181,7 +1186,10 @@ def ingest_document(
             detail={"code": "upload_intent_abandoned", "message": str(error)},
         ) from error
     except ObjectStorageConfigurationError as error:
-        logger.error("Original storage configuration failed: %s", error)
+        logger.error(
+            "Original storage configuration failed: %s",
+            safe_error_summary(error, operation="original storage configuration"),
+        )
         raise HTTPException(
             status_code=503,
             detail="Original document storage is not ready.",
@@ -1194,12 +1202,18 @@ def ingest_document(
     except ObjectIntegrityError as error:
         if upload_intent:
             record_upload_error(get_db, upload_intent.id, error)
-        logger.error("Original storage integrity failure", exc_info=True)
+        logger.error(
+            "Original storage integrity failure: %s",
+            safe_error_summary(error, operation="original storage integrity verification"),
+        )
         raise HTTPException(status_code=500, detail="Original document integrity verification failed.") from error
     except ObjectStorageError as error:
         if upload_intent:
             record_upload_error(get_db, upload_intent.id, error)
-        logger.warning("Original storage is temporarily unavailable: %s", error)
+        logger.warning(
+            "Original storage is temporarily unavailable: %s",
+            safe_error_summary(error, operation="original storage access"),
+        )
         raise HTTPException(status_code=503, detail="Original document storage is temporarily unavailable.") from error
     except HTTPException as error:
         if upload_intent:
@@ -1210,14 +1224,23 @@ def ingest_document(
             record_upload_error(get_db, upload_intent.id, error)
         logger.info("Concurrent duplicate document upload rejected")
         raise HTTPException(status_code=409, detail="This document already exists in the workspace.") from error
-    except Exception as e:
+    except Exception as error:
         if upload_intent:
             try:
-                record_upload_error(get_db, upload_intent.id, e)
-            except Exception:
-                logger.error("Failed to record upload intent error", exc_info=True)
-        logger.error(f"Ingestion error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Document ingestion failed.") from e
+                record_upload_error(get_db, upload_intent.id, error)
+            except Exception as persistence_error:
+                logger.error(
+                    "Failed to record upload intent error: %s",
+                    safe_error_summary(
+                        persistence_error,
+                        operation="upload failure persistence",
+                    ),
+                )
+        logger.error(
+            "Ingestion error: %s",
+            safe_error_summary(error, operation="document ingestion"),
+        )
+        raise HTTPException(status_code=500, detail="Document ingestion failed.") from error
 
 
 def _reconcile_upload_intent(intent: UploadIntent) -> None:
@@ -1275,8 +1298,11 @@ def _run_upload_reconciler(stop_event: Event) -> None:
                 lease_seconds=lease_seconds,
                 max_attempts=max_attempts,
             )
-        except Exception:
-            logger.error("Upload reconciler could not lease work", exc_info=True)
+        except Exception as error:
+            logger.error(
+                "Upload reconciler could not lease work: %s",
+                safe_error_summary(error, operation="upload reconciliation lease"),
+            )
             stop_event.wait(poll_seconds)
             continue
 
@@ -1289,16 +1315,19 @@ def _run_upload_reconciler(stop_event: Event) -> None:
         except Exception as error:
             try:
                 record_upload_error(get_db, intent.id, error)
-            except Exception:
+            except Exception as persistence_error:
                 logger.error(
-                    "Upload reconciler could not persist failure for intent %s",
+                    "Upload reconciler could not persist failure for intent %s: %s",
                     intent.id,
-                    exc_info=True,
+                    safe_error_summary(
+                        persistence_error,
+                        operation="upload reconciliation failure persistence",
+                    ),
                 )
             logger.warning(
                 "Upload reconciliation failed for intent %s: %s",
                 intent.id,
-                error,
+                safe_error_summary(error, operation="upload reconciliation"),
             )
 
 
@@ -1689,7 +1718,11 @@ def resolve_document_evidence(
             )
         envelope = build_evidence_envelope(evidence_row, visual_target)
     except (EvidenceIntegrityError, LayoutEvidenceIntegrityError) as error:
-        logger.error("Evidence handle %s failed closed: %s", chunk_id, error)
+        logger.error(
+            "Evidence handle %s failed closed: %s",
+            chunk_id,
+            safe_error_summary(error, operation="evidence verification"),
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -1698,7 +1731,11 @@ def resolve_document_evidence(
             },
         ) from error
     except (ObjectNotFoundError, ObjectIntegrityError) as error:
-        logger.error("Evidence layout object %s failed closed: %s", chunk_id, error)
+        logger.error(
+            "Evidence layout object %s failed closed: %s",
+            chunk_id,
+            safe_error_summary(error, operation="evidence layout verification"),
+        )
         raise HTTPException(
             status_code=409,
             detail={
@@ -1827,7 +1864,10 @@ def download_document_original(
                     SET status = 'missing', last_error = %s, updated_at = NOW()
                     WHERE id = %s AND status = 'available'
                     """,
-                    (str(error)[:2000], str(source["id"])),
+                    (
+                        safe_error_summary(error, operation="original object download"),
+                        str(source["id"]),
+                    ),
                 )
         raise HTTPException(status_code=503, detail="The exact original is missing from storage.") from error
     except ObjectIntegrityError as error:
@@ -1839,7 +1879,10 @@ def download_document_original(
                     SET status = 'error', last_error = %s, updated_at = NOW()
                     WHERE id = %s AND status IN ('available', 'missing', 'error')
                     """,
-                    (str(error)[:2000], str(source["id"])),
+                    (
+                        safe_error_summary(error, operation="original object verification"),
+                        str(source["id"]),
+                    ),
                 )
         raise HTTPException(status_code=500, detail="The exact original failed integrity verification.") from error
     except ObjectStorageError as error:

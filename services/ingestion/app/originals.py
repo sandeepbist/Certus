@@ -20,6 +20,7 @@ from services.shared.object_storage import (
     StoredObject,
     original_object_key,
 )
+from services.shared.safe_errors import safe_error_summary
 
 
 class UploadIntentError(RuntimeError):
@@ -457,7 +458,7 @@ def record_upload_error(
     intent_id: str,
     error: Exception,
 ) -> None:
-    sanitized = str(error).strip().replace("\x00", "")[:2000] or error.__class__.__name__
+    sanitized = safe_error_summary(error, operation="document upload")
     with get_db() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
