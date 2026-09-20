@@ -1,0 +1,94 @@
+name: Container security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 5 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application-image:
+    name: Build, SBOM, and scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - embedding
+          - gateway
+          - ingestion
+          - mcp-tools
+          - orchestration
+          - web
+          - workflows
+    env:
+      IMAGE_NAME: local/certus-${{ matrix.service }}:${{ github.sha }}
+      SBOM_PATH: sbom-${{ matrix.service }}.spdx.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Build the exact application image
+        run: >-
+          docker build
+          --file "services/${{ matrix.service }}/Dockerfile"
+          --tag "$IMAGE_NAME"
+          .
+
+      - name: Generate the image SPDX SBOM
+        id: sbom
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.IMAGE_NAME }}
+          format: spdx-json
+          output-file: ${{ env.SBOM_PATH }}
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Scan the generated SBOM
+        id: scan
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: ${{ env.SBOM_PATH }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          output-format: sarif
+
+      - name: Upload vulnerability findings
+        if: >-
+          always() &&
+          steps.scan.outputs.sarif != '' &&
+          github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: grype/${{ matrix.service }}
+
+      - name: Retain the machine-readable SBOM
+        if: always() && steps.sbom.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ matrix.service }}-${{ github.sha }}
+          path: ${{ env.SBOM_PATH }}
+          if-no-files-found: error
+          retention-days: 14

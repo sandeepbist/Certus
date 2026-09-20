@@ -7,6 +7,10 @@ const securityWorkflow = readFileSync(
   path.join(repositoryRoot, '.github/workflows/security.yml'),
   'utf8',
 );
+const containerSecurityWorkflow = readFileSync(
+  path.join(repositoryRoot, '.github/workflows/container-security.yml'),
+  'utf8',
+);
 
 describe('repository security workflow', () => {
   test('analyzes every first-party source and workflow language with extended queries', () => {
@@ -35,5 +39,29 @@ describe('repository security workflow', () => {
     for (const [, revision] of actionReferences) {
       expect(revision).toMatch(/^[a-f0-9]{40}$/);
     }
+  });
+
+  test('builds, inventories, and scans every application image', () => {
+    for (const service of [
+      'embedding',
+      'gateway',
+      'ingestion',
+      'mcp-tools',
+      'orchestration',
+      'web',
+      'workflows',
+    ]) {
+      expect(containerSecurityWorkflow).toContain(`- ${service}`);
+    }
+    expect(containerSecurityWorkflow).toContain('format: spdx-json');
+    expect(containerSecurityWorkflow).toContain('severity-cutoff: high');
+    expect(containerSecurityWorkflow).toContain('only-fixed: false');
+    expect(containerSecurityWorkflow).toContain('output-format: sarif');
+    expect(containerSecurityWorkflow).toContain("github.actor != 'dependabot[bot]'");
+    expect(containerSecurityWorkflow).toContain(
+      'github.event.pull_request.head.repo.full_name == github.repository',
+    );
+    expect(containerSecurityWorkflow).toContain('retention-days: 14');
+    expect(containerSecurityWorkflow).toContain('schedule:');
   });
 });
