@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { safeErrorFields } from './safe-errors';
 
 const { Pool } = pg;
 type DatabasePool = InstanceType<typeof Pool>;
@@ -105,7 +106,10 @@ export function createDatabasePool(
     allowExitOnIdle: true,
   });
   pool.on('error', (error) => {
-    console.error('Unexpected error on an idle Certus Web database client.', error);
+    console.error(
+      'Unexpected error on an idle Certus Web database client.',
+      safeErrorFields(error, 'idle Web database client'),
+    );
   });
   return pool;
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { safeErrorFields } from '@/lib/safe-errors';
 
 export default function Error({
   error,
@@ -10,7 +11,7 @@ export default function Error({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error('App error:', error);
+    console.error('App error:', safeErrorFields(error, 'application render'));
   }, [error]);
 
   return (
@@ -20,7 +21,7 @@ export default function Error({
       </div>
       <h1 className="text-xl font-semibold mb-2 tracking-tight">System Encountered an Error</h1>
       <p className="text-zinc-400 text-xs max-w-md mb-6">
-        {error.message || 'An unexpected error occurred during execution.'}
+        An unexpected error occurred during execution.
       </p>
       <button
         onClick={() => reset()}

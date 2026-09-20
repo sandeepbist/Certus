@@ -2,6 +2,7 @@ import { headers } from 'next/headers';
 import { NextResponse } from 'next/server';
 
 import { getDb } from '@/lib/db';
+import { safeErrorFields } from '@/lib/safe-errors';
 import { requireWorkspaceSession, WorkspaceSessionError } from '@/lib/workspace-session';
 
 export const dynamic = 'force-dynamic';
@@ -82,7 +83,10 @@ function errorResponse(error: unknown) {
       { status: error.status },
     );
   }
-  console.error('Settings operation failed.', error);
+  console.error(
+    'Settings operation failed.',
+    safeErrorFields(error, 'settings operation'),
+  );
   return NextResponse.json(
     { error: 'SettingsOperationFailed', message: 'Settings are temporarily unavailable.' },
     { status: 500, headers: { 'Cache-Control': 'no-store' } },
