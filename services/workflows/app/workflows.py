@@ -126,7 +126,10 @@ class WebhookEventWorkflow:
                     "delivered": 0,
                     "skipped": 0,
                     "failed": 1,
-                    "last_error": str(error)[:500],
+                    "last_error": (
+                        "webhook target loading failed "
+                        f"({type(error).__name__})"
+                    ),
                 },
                 start_to_close_timeout=timedelta(seconds=30),
                 schedule_to_close_timeout=timedelta(hours=1),
@@ -155,7 +158,10 @@ class WebhookEventWorkflow:
                     delivered += 1
             except ActivityError as error:
                 failed += 1
-                last_error = str(error)[:500]
+                last_error = (
+                    "webhook delivery failed "
+                    f"({type(error).__name__})"
+                )
 
         result = await workflow.execute_activity(
             "record_webhook_event_result",
