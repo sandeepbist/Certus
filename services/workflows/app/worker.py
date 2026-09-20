@@ -34,6 +34,7 @@ from services.shared.worker_runtime import (
     connect_database,
     write_worker_heartbeat,
 )
+from services.shared.safe_errors import safe_error_summary
 
 
 MODULE_PATH = Path(__file__).resolve()
@@ -74,7 +75,11 @@ async def connect_temporal() -> Client:
                 timeout=DEPENDENCY_CONNECT_TIMEOUT_SECONDS,
             )
         except Exception as error:
-            logger.warning("Temporal connection failed; retrying in %ss: %s", delay, error)
+            logger.warning(
+                "Temporal connection failed; retrying in %ss: %s",
+                delay,
+                safe_error_summary(error, operation="Temporal connection"),
+            )
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
 
@@ -219,7 +224,10 @@ async def heartbeat_loop(stop_event: asyncio.Event, initial_metadata: dict) -> N
             metadata = await asyncio.to_thread(workflow_queue_metadata)
             await asyncio.to_thread(record_worker_heartbeat, "running", metadata)
         except Exception as error:
-            logger.warning("Workflow worker heartbeat failed: %s", error)
+            logger.warning(
+                "Workflow worker heartbeat failed: %s",
+                safe_error_summary(error, operation="workflow worker heartbeat"),
+            )
         try:
             await asyncio.wait_for(
                 stop_event.wait(),
@@ -322,7 +330,10 @@ async def main() -> None:
         metadata = await asyncio.to_thread(workflow_queue_metadata)
         await asyncio.to_thread(record_worker_heartbeat, "stopped", metadata)
     except Exception as error:
-        logger.warning("Could not record stopped workflow heartbeat: %s", error)
+        logger.warning(
+            "Could not record stopped workflow heartbeat: %s",
+            safe_error_summary(error, operation="stopped workflow heartbeat"),
+        )
     for handled_signal in registered_signals:
         loop.remove_signal_handler(handled_signal)
     logger.info("Workflow worker stopped")

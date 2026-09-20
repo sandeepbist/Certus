@@ -28,6 +28,7 @@ from services.shared.webhooks import (
     decrypt_signing_secret,
     send_signed_webhook,
 )
+from services.shared.safe_errors import safe_error_summary
 
 
 load_dotenv(REPO_ROOT / ".env")
@@ -175,7 +176,10 @@ def sync_automation_task_to_graph(task: Dict[str, Any], tenant_id: str, user_id:
                     priority=task["priority"],
                 )
     except Exception as error:
-        logger.warning("Automation task graph sync degraded: %s", error)
+        logger.warning(
+            "Automation task graph sync degraded: %s",
+            safe_error_summary(error, operation="automation task graph sync"),
+        )
 
 
 @activity.defn(name="execute_automation")
@@ -533,7 +537,10 @@ def deliver_webhook_event(payload: Dict[str, Any]) -> Dict[str, Any]:
             allow_private=WEBHOOK_ALLOW_PRIVATE_TARGETS,
         )
     except (UnsafeWebhookTarget, WebhookConfigurationError) as error:
-        error_message = str(error)[:500]
+        error_message = safe_error_summary(
+            error,
+            operation="webhook delivery validation",
+        )
         _record_webhook_attempt_failure(
             attempt_id=attempt_id,
             webhook_id=webhook_id,

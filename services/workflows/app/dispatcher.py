@@ -18,6 +18,7 @@ from services.shared.worker_runtime import (
     connect_database,
     redis_connection_options,
 )
+from services.shared.safe_errors import safe_error_summary
 
 
 logger = logging.getLogger("certus_automation_dispatcher")
@@ -173,7 +174,11 @@ def release_automation_event(event_id: str, publish_attempts: int, error: Except
                     last_error = %s, updated_at = NOW()
                 WHERE id = %s AND status = 'publishing'
                 """,
-                (backoff_seconds, str(error)[:1_000], event_id),
+                (
+                    backoff_seconds,
+                    safe_error_summary(error, operation="automation publication"),
+                    event_id,
+                ),
             )
 
 
@@ -310,7 +315,11 @@ def release_embedding_job(job_id: str, publish_attempts: int, error: Exception) 
                     last_error = %s, updated_at = NOW()
                 WHERE id = %s AND status = 'publishing'
                 """,
-                (backoff_seconds, str(error)[:1_000], job_id),
+                (
+                    backoff_seconds,
+                    safe_error_summary(error, operation="embedding publication"),
+                    job_id,
+                ),
             )
 
 
@@ -425,7 +434,11 @@ def release_webhook_event(event_id: str, dispatch_attempts: int, error: Exceptio
                     last_error = %s, updated_at = NOW()
                 WHERE id = %s AND status = 'dispatching'
                 """,
-                (backoff_seconds, str(error)[:1_000], event_id),
+                (
+                    backoff_seconds,
+                    safe_error_summary(error, operation="webhook dispatch"),
+                    event_id,
+                ),
             )
 
 
@@ -499,7 +512,11 @@ def release_notification_event(event_id: str, publish_attempts: int, error: Exce
                     last_error = %s, updated_at = NOW()
                 WHERE id = %s AND status = 'publishing'
                 """,
-                (backoff_seconds, str(error)[:1_000], event_id),
+                (
+                    backoff_seconds,
+                    safe_error_summary(error, operation="notification publication"),
+                    event_id,
+                ),
             )
 
 
@@ -594,7 +611,11 @@ def release_realtime_event(event_id: str, publish_attempts: int, error: Exceptio
                     last_error = %s, updated_at = NOW()
                 WHERE id = %s AND status = 'publishing'
                 """,
-                (backoff_seconds, str(error)[:1_000], event_id),
+                (
+                    backoff_seconds,
+                    safe_error_summary(error, operation="realtime publication"),
+                    event_id,
+                ),
             )
 
 
@@ -666,10 +687,10 @@ class AutomationEventOutboxDispatcher:
                         int(event["publish_attempts"]),
                         error,
                     )
-                    logger.exception(
+                    logger.error(
                         "Automation event %s publication failed: %s",
                         event["id"],
-                        error,
+                        safe_error_summary(error, operation="automation publication"),
                     )
 
 
@@ -721,10 +742,10 @@ class EmbeddingJobDispatcher:
                         int(job["publish_attempts"]),
                         error,
                     )
-                    logger.exception(
+                    logger.error(
                         "Embedding job %s publication failed: %s",
                         job["id"],
-                        error,
+                        safe_error_summary(error, operation="embedding publication"),
                     )
 
 
@@ -812,7 +833,11 @@ class AutomationDispatcher:
                     pipeline.xdel(STREAM_KEY, message_id)
                     await pipeline.execute()
                 except Exception as error:
-                    logger.exception("Automation event %s dispatch failed: %s", message_id, error)
+                    logger.error(
+                        "Automation event %s dispatch failed: %s",
+                        message_id,
+                        safe_error_summary(error, operation="automation dispatch"),
+                    )
 
 
 class WebhookEventDispatcher:
@@ -873,7 +898,11 @@ class WebhookEventDispatcher:
                 try:
                     await self.dispatch_event(event)
                 except Exception as error:
-                    logger.exception("Webhook event %s dispatch failed: %s", event["id"], error)
+                    logger.error(
+                        "Webhook event %s dispatch failed: %s",
+                        event["id"],
+                        safe_error_summary(error, operation="webhook dispatch"),
+                    )
 
 
 class NotificationEventDispatcher:
@@ -940,10 +969,10 @@ class NotificationEventDispatcher:
                         int(event["publish_attempts"]),
                         error,
                     )
-                    logger.exception(
+                    logger.error(
                         "Notification event %s publication failed: %s",
                         event["id"],
-                        error,
+                        safe_error_summary(error, operation="notification publication"),
                     )
 
 
@@ -1011,8 +1040,8 @@ class RealtimeEventDispatcher:
                         int(event["publish_attempts"]),
                         error,
                     )
-                    logger.exception(
+                    logger.error(
                         "Realtime event %s publication failed: %s",
                         event["id"],
-                        error,
+                        safe_error_summary(error, operation="realtime publication"),
                     )
