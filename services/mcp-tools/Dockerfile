@@ -15,9 +15,10 @@ RUN groupadd --gid 10001 certus \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
+    NODE_ENV=production \
     PORT=8003
 
 EXPOSE 8003
 
 USER certus
-CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8003"]
+CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8003", "--no-server-header"]

@@ -47,6 +47,11 @@ from app.reconciler_runtime import UploadReconcilerConfig, upload_reconciler_is_
 from services.shared.admission import AdmissionCapacityExceeded, AsyncAdmissionController
 from services.shared.embeddings import configured_embedding_profile
 from services.shared.embedding_registry import register_embedding_profile
+from services.shared.http_runtime import (
+    configured_internal_service_token,
+    development_reload_enabled,
+    fastapi_documentation_options,
+)
 from services.shared.safe_errors import safe_error_summary
 from services.shared.worker_runtime import bounded_int_env, connect_database
 from services.shared.object_storage import (
@@ -134,6 +139,7 @@ app = FastAPI(
     description="Document parsing, MIME detection, entity extraction, and chunking pipeline",
     version="1.0.0",
     lifespan=application_lifespan,
+    **fastapi_documentation_options(),
 )
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nexus:nexus_dev_password@localhost:5432/nexus")
@@ -153,7 +159,7 @@ PROCESSING_ADMISSION = AsyncAdmissionController(
     ),
 )
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50MB
-INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
+INTERNAL_SERVICE_TOKEN = configured_internal_service_token()
 ACTIVE_EMBEDDING_PROFILE = configured_embedding_profile(
     os.getenv("OPENAI_API_KEY", ""),
     os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
@@ -2187,4 +2193,10 @@ def delete_document(
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=development_reload_enabled(),
+        server_header=False,
+    )

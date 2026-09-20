@@ -32,6 +32,11 @@ from app.api.embedding_generations import router as embedding_generations_router
 from app.core.db import DatabasePoolTimeout, close_db_pool, get_db_cursor
 from app.core.runtime import close_runtime_resources
 from app.retrieval.graphrag import close_graph_driver
+from services.shared.http_runtime import (
+    configured_internal_service_token,
+    development_reload_enabled,
+    fastapi_documentation_options,
+)
 from services.shared.safe_errors import safe_error_summary
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -61,9 +66,10 @@ app = FastAPI(
     description="Modular LangGraph multi-agent execution, GraphRAG, Traces Replay, Memory, and Automations Engine",
     version="1.0.0",
     lifespan=lifespan,
+    **fastapi_documentation_options(),
 )
 
-INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
+INTERNAL_SERVICE_TOKEN = configured_internal_service_token()
 WORKER_HEARTBEAT_STALE_SECONDS = int(
     os.getenv("WORKER_HEARTBEAT_STALE_SECONDS", "30")
 )
@@ -174,4 +180,10 @@ app.include_router(embedding_generations_router)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8002))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=development_reload_enabled(),
+        server_header=False,
+    )

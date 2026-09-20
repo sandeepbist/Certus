@@ -18,6 +18,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import TypedDict
+from services.shared.http_runtime import (
+    configured_internal_service_token,
+    fastapi_documentation_options,
+)
 from services.shared.safe_errors import safe_error_summary
 
 
@@ -65,7 +69,7 @@ except ModuleNotFoundError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("certus_mcp_server")
 
-INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
+INTERNAL_SERVICE_TOKEN = configured_internal_service_token()
 DEFAULT_ALLOWED_HOSTS = "localhost,localhost:*,127.0.0.1,127.0.0.1:*"
 
 
@@ -371,6 +375,7 @@ app = FastAPI(
     description="MCP 2026-07-28 server with private REST compatibility endpoints.",
     version="1.0.0",
     lifespan=lifespan,
+    **fastapi_documentation_options(),
 )
 
 
@@ -542,4 +547,4 @@ app.mount("/", mcp_transport_app)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8003))
-    uvicorn.run("app.server:app", host="127.0.0.1", port=port)
+    uvicorn.run("app.server:app", host="127.0.0.1", port=port, server_header=False)
