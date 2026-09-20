@@ -1,6 +1,7 @@
 'use client';
 
 import { signIn } from '@/lib/auth-client';
+import { safeErrorFields } from '@/lib/safe-errors';
 import { useState } from 'react';
 
 type OAuthProvider = 'google' | 'github';
@@ -16,7 +17,10 @@ export function OAuthButtons({ providers }: { providers: OAuthProvider[] }) {
         callbackURL: '/dashboard',
       });
     } catch (err) {
-      console.error(`OAuth error with ${provider}:`, err);
+      console.error(
+        `OAuth error with ${provider}:`,
+        safeErrorFields(err, 'OAuth sign-in'),
+      );
     } finally {
       setLoadingProvider(null);
     }

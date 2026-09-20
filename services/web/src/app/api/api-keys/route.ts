@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 
 import { getAuth } from '@/lib/auth';
 import { getDb } from '@/lib/db';
+import { safeErrorFields } from '@/lib/safe-errors';
 import { requireWorkspaceSession, WorkspaceSessionError } from '@/lib/workspace-session';
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +19,10 @@ function errorResponse(error: unknown) {
       { status: error.status },
     );
   }
-  console.error('API key operation failed.', error);
+  console.error(
+    'API key operation failed.',
+    safeErrorFields(error, 'API key operation'),
+  );
   return NextResponse.json(
     { error: 'ApiKeyOperationFailed', message: 'API keys are temporarily unavailable.' },
     { status: 500, headers: { 'Cache-Control': 'no-store' } },
