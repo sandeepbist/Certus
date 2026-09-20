@@ -6,6 +6,7 @@ COPY services/mcp-tools/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/mcp-tools/app/ ./app/
+COPY services/shared/ ./services/shared/
 
 RUN groupadd --gid 10001 certus \
     && useradd --uid 10001 --gid certus --create-home --no-log-init certus \
