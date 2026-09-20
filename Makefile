@@ -1,4 +1,4 @@
-.PHONY: setup dev build check smoke clean docker-up docker-down docker-logs docker-reset migrate help
+.PHONY: setup dev build check lock-python smoke clean docker-up docker-down docker-logs docker-reset migrate help
 
 # Default target
 help: ## Show this help
@@ -24,6 +24,9 @@ build: ## Build all services
 
 check: ## Run lint, types, unit tests, and Python contracts
 	@bun run check
+
+lock-python: ## Regenerate hash-verified Python dependency locks with uv 0.12.9
+	@bun run lock:python
 
 smoke: ## Probe the running local application and infrastructure
 	@bun run smoke

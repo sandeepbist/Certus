@@ -34,6 +34,11 @@ bun run build:gateway
 bun run build:web
 ```
 
+When changing a Python `requirements.txt` input, install `uv` 0.12.9, run
+`make lock-python`, and commit the matching `requirements.lock` update.
+Lockfiles are generated, universal for Python 3.12, and hash-verified; do not
+edit them by hand.
+
 ## Pull requests
 
 A useful pull request includes:

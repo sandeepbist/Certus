@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY services/mcp-tools/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY services/mcp-tools/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requirements.lock
 
 COPY services/mcp-tools/app/ ./app/
 COPY services/shared/ ./services/shared/
