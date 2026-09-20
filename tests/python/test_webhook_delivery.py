@@ -1,6 +1,9 @@
 import json
 import socket
 import unittest
+from unittest.mock import MagicMock, patch
+
+import httpx
 
 from services.orchestration.app.retrieval.webhook_delivery import (
     UnsafeWebhookTarget,
@@ -15,6 +18,7 @@ from services.shared.webhooks import (
     decrypt_signing_secret as decrypt_shared_secret,
     encrypt_signing_secret as encrypt_shared_secret,
     response_status_is_retryable,
+    send_signed_webhook,
 )
 
 
@@ -96,6 +100,46 @@ class WebhookDeliveryTests(unittest.TestCase):
         )
         with self.assertRaises(WebhookConfigurationError):
             encrypt_shared_secret("whsec_proof", "too-short", "", "production")
+
+    def test_transport_failure_drops_exception_instance_data(self):
+        secret = "whsec_transport-private"
+        request = httpx.Request("POST", "https://93.184.216.34/hook")
+        client = MagicMock()
+        client_context = MagicMock()
+        client_context.__enter__.return_value = client
+        client.stream.side_effect = httpx.ConnectError(
+            f"Authorization: Bearer {secret} at provider.internal",
+            request=request,
+        )
+
+        with (
+            patch(
+                "services.shared.webhooks.webhook_request_target",
+                return_value=(
+                    "https://93.184.216.34/hook",
+                    "example.com",
+                    "example.com",
+                ),
+            ),
+            patch("services.shared.webhooks.httpx.Client", return_value=client_context),
+        ):
+            outcome = send_signed_webhook(
+                url="https://example.com/hook",
+                secret="signing-secret",
+                event_type="task_created",
+                data={"task_id": "one"},
+                delivery_id="delivery-one",
+                created_at=1_700_000_000,
+            )
+
+        self.assertFalse(outcome.success)
+        self.assertTrue(outcome.retryable)
+        self.assertEqual(
+            outcome.error_message,
+            "webhook request failed (ConnectError)",
+        )
+        self.assertNotIn(secret, str(outcome))
+        self.assertNotIn("provider.internal", str(outcome))
 
 
 if __name__ == "__main__":

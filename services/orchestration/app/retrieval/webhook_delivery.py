@@ -20,6 +20,7 @@ from services.shared.webhooks import (
     validate_webhook_url as validate_shared_url,
     webhook_request_target as shared_request_target,
 )
+from services.shared.safe_errors import safe_error_summary
 
 try:
     from app.core.config import settings
@@ -149,7 +150,7 @@ def deliver_webhook(
             allow_private=settings.WEBHOOK_ALLOW_PRIVATE_TARGETS,
         )
     except (UnsafeWebhookTarget, WebhookConfigurationError) as error:
-        error_message = str(error)[:500]
+        error_message = safe_error_summary(error, operation="webhook delivery")
         with get_db_cursor(dict_cursor=False) as cursor:
             cursor.execute(
                 """

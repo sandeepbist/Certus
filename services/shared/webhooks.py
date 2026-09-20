@@ -21,6 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
+from services.shared.safe_errors import safe_error_summary
+
 
 SUPPORTED_WEBHOOK_EVENTS = (
     "document_ready",
@@ -290,7 +292,7 @@ def send_signed_webhook(
             error_message = f"Endpoint returned HTTP {response_status}"
             retryable = response_status_is_retryable(response_status)
     except httpx.HTTPError as error:
-        error_message = str(error)[:500]
+        error_message = safe_error_summary(error, operation="webhook request")
         retryable = True
 
     return WebhookTransportOutcome(

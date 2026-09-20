@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import logging
 import os
 from threading import Lock
 from typing import Any
+
+from services.shared.safe_errors import safe_error_summary
+
+
+logger = logging.getLogger("orchestration_runtime")
 
 
 RETRIEVAL_PARALLEL_WORKERS = int(
@@ -86,6 +92,18 @@ def close_runtime_resources() -> None:
         clients = list(_openai_clients.values())
         _openai_clients.clear()
     if executor is not None:
-        executor.shutdown(wait=True, cancel_futures=True)
+        try:
+            executor.shutdown(wait=True, cancel_futures=True)
+        except Exception as error:
+            logger.error(
+                "Could not close retrieval executor: %s",
+                safe_error_summary(error, operation="retrieval executor shutdown"),
+            )
     for client in clients:
-        client.close()
+        try:
+            client.close()
+        except Exception as error:
+            logger.error(
+                "Could not close model client: %s",
+                safe_error_summary(error, operation="model client shutdown"),
+            )

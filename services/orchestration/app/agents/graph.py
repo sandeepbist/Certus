@@ -30,6 +30,7 @@ from app.retrieval.memory import retrieve_relevant_memories
 from app.replay import ChatReplayUnavailable, reconstruct_frozen_evidence
 from app.query_planning import build_query_plan, validate_query_plan
 from app.pricing import estimate_openai_text_generation_cost
+from services.shared.safe_errors import safe_error_summary
 from app.grounding import (
     ANSWER_PROPOSAL_SCHEMA,
     GENERATION_MAX_OUTPUT_TOKENS,
@@ -380,7 +381,10 @@ def researcher_node(state: AgentState) -> Dict[str, Any]:
             query_embedding = embed_query(retrieval_query)
         except Exception as error:
             embedding_error = type(error).__name__
-            logger.warning("Shared query embedding unavailable: %s", error)
+            logger.warning(
+                "Shared query embedding unavailable: %s",
+                safe_error_summary(error, operation="shared query embedding"),
+            )
     embedding_latency_ms = int((time.monotonic() - embedding_started_at) * 1000)
 
     query_entities = (
@@ -449,7 +453,11 @@ def researcher_node(state: AgentState) -> Dict[str, Any]:
             return future.result()
         except Exception as error:
             branch_errors[name] = type(error).__name__
-            logger.warning("%s retrieval branch degraded: %s", name, error)
+            logger.warning(
+                "%s retrieval branch degraded: %s",
+                name,
+                safe_error_summary(error, operation=f"{name} retrieval"),
+            )
             return default
 
     chunks = result_or_default("documents", []) if use_documents else []
@@ -1691,7 +1699,13 @@ class MultiAgentOrchestrator:
                     error_message=type(error).__name__,
                 )
             except Exception as persistence_error:
-                logger.error("Failed to persist agent run failure: %s", persistence_error)
+                logger.error(
+                    "Failed to persist agent run failure: %s",
+                    safe_error_summary(
+                        persistence_error,
+                        operation="agent run failure persistence",
+                    ),
+                )
             raise
 
     @staticmethod
@@ -1765,7 +1779,13 @@ class MultiAgentOrchestrator:
                     error_message=type(error).__name__,
                 )
             except Exception as persistence_error:
-                logger.error("Failed to persist frozen replay failure: %s", persistence_error)
+                logger.error(
+                    "Failed to persist frozen replay failure: %s",
+                    safe_error_summary(
+                        persistence_error,
+                        operation="frozen replay failure persistence",
+                    ),
+                )
             raise
 
     @staticmethod
@@ -1859,7 +1879,13 @@ class MultiAgentOrchestrator:
                     "Client disconnected",
                 )
             except Exception as persistence_error:
-                logger.error("Failed to persist interrupted agent run: %s", persistence_error)
+                logger.error(
+                    "Failed to persist interrupted agent run: %s",
+                    safe_error_summary(
+                        persistence_error,
+                        operation="interrupted agent run persistence",
+                    ),
+                )
             raise
         except Exception as error:
             latency_ms = int((time.time() - start_time) * 1000)
@@ -1873,5 +1899,11 @@ class MultiAgentOrchestrator:
                     type(error).__name__,
                 )
             except Exception as persistence_error:
-                logger.error("Failed to persist failed agent run: %s", persistence_error)
+                logger.error(
+                    "Failed to persist failed agent run: %s",
+                    safe_error_summary(
+                        persistence_error,
+                        operation="failed agent run persistence",
+                    ),
+                )
             raise

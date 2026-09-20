@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.db import get_db_cursor
 from app.core.identity import RequestIdentity, require_request_identity
 from app.retrieval.graphrag import bounded_graph_query, get_graph_driver
+from services.shared.safe_errors import safe_error_summary
 
 
 logger = logging.getLogger("orchestration_tasks")
@@ -128,7 +129,10 @@ def sync_task_graph(task: dict, identity: RequestIdentity) -> None:
                     tags=task["tags"],
                 ).consume()
     except Exception as error:
-        logger.warning("Task graph synchronization degraded: %s", error)
+        logger.warning(
+            "Task graph synchronization degraded: %s",
+            safe_error_summary(error, operation="task graph synchronization"),
+        )
 
 
 @router.get("/tasks")
@@ -330,6 +334,9 @@ def delete_task(
                 tenant_id=identity.tenant_id,
             ).consume()
     except Exception as error:
-        logger.warning("Task graph deletion degraded: %s", error)
+        logger.warning(
+            "Task graph deletion degraded: %s",
+            safe_error_summary(error, operation="task graph deletion"),
+        )
 
     return {"deleted": True, "task_id": str(task_id)}

@@ -9,6 +9,7 @@ from app.core.db import get_db_connection
 from app.core.runtime import RETRIEVAL_STATEMENT_TIMEOUT_MS
 from app.retrieval.hybrid import EmbeddingResult, embed_query
 from services.shared.embeddings import serving_embedding_profile_sql_literal
+from services.shared.safe_errors import safe_error_summary
 
 
 logger = logging.getLogger("orchestration_memory_retrieval")
@@ -100,5 +101,8 @@ def retrieve_relevant_memories(
                     )
         return memories
     except Exception as error:
-        logger.warning("Long-term memory retrieval degraded: %s", error)
+        logger.warning(
+            "Long-term memory retrieval degraded: %s",
+            safe_error_summary(error, operation="long-term memory retrieval"),
+        )
         return []
