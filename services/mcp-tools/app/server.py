@@ -18,6 +18,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import TypedDict
+from services.shared.safe_errors import safe_error_summary
 
 
 MODULE_PATH = Path(__file__).resolve()
@@ -356,7 +357,13 @@ async def lifespan(_: FastAPI):
         async with mcp.session_manager.run():
             yield
     finally:
-        await asyncio.to_thread(close_graph_driver)
+        try:
+            await asyncio.to_thread(close_graph_driver)
+        except Exception as error:
+            logger.error(
+                "Could not close the MCP graph driver: %s",
+                safe_error_summary(error, operation="MCP graph driver shutdown"),
+            )
 
 
 app = FastAPI(
@@ -522,7 +529,10 @@ async def execute_tool(
     except ToolExecutionError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
-        logger.exception("Unexpected compatibility tool failure")
+        logger.error(
+            "Unexpected compatibility tool failure: %s",
+            safe_error_summary(error, operation="compatibility tool execution"),
+        )
         raise HTTPException(status_code=500, detail="The tool could not be executed") from error
 
 
