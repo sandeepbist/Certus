@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import psycopg2
+from fastapi import HTTPException
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,70 @@ from app.tool_service import (
 
 
 class MCPToolContractTests(unittest.TestCase):
+    def test_tool_diagnostics_drop_exception_instance_data(self):
+        secret = "postgresql://user:private-password@database.internal/certus"
+        identity = tool_service.RequestIdentity("user-1", "tenant-1")
+
+        with (
+            patch.object(
+                tool_service,
+                "database_connection",
+                side_effect=psycopg2.OperationalError(secret),
+            ),
+            self.assertLogs("certus_tool_service", level="ERROR") as captured,
+            self.assertRaises(ToolUnavailableError),
+        ):
+            tool_service.search_notes("proof", identity)
+
+        diagnostics = "\n".join(captured.output)
+        self.assertIn("workspace note search failed (OperationalError)", diagnostics)
+        self.assertNotIn(secret, diagnostics)
+        self.assertNotIn("private-password", diagnostics)
+
+    def test_compatibility_boundary_hides_and_redacts_unexpected_failures(self):
+        async def exercise():
+            secret = "Authorization: Bearer mcp-private-token"
+            request = server_module.ToolExecuteRequest(
+                tool_name="search_notes",
+                arguments={"query": "proof"},
+            )
+            with (
+                patch.object(
+                    server_module,
+                    "execute_compatibility_tool",
+                    new=AsyncMock(side_effect=RuntimeError(secret)),
+                ),
+                self.assertLogs("certus_mcp_server", level="ERROR") as captured,
+                self.assertRaises(HTTPException) as raised,
+            ):
+                await server_module.execute_tool(
+                    request,
+                    user_id="user-1",
+                    tenant_id="tenant-1",
+                )
+
+            self.assertEqual(raised.exception.status_code, 500)
+            self.assertEqual(raised.exception.detail, "The tool could not be executed")
+            diagnostics = "\n".join(captured.output)
+            self.assertIn(
+                "compatibility tool execution failed (RuntimeError)",
+                diagnostics,
+            )
+            self.assertNotIn(secret, diagnostics)
+            self.assertNotIn("mcp-private-token", diagnostics)
+
+        asyncio.run(exercise())
+
+    def test_mcp_runtime_has_no_traceback_diagnostic_sinks(self):
+        for source_path in (
+            "services/mcp-tools/app/server.py",
+            "services/mcp-tools/app/tool_service.py",
+        ):
+            source = Path(source_path).read_text(encoding="utf-8")
+            with self.subTest(source_path=source_path):
+                self.assertNotIn("logger.exception", source)
+                self.assertNotIn("exc_info=True", source)
+
     def test_database_connections_are_bounded_and_identified(self):
         with patch.object(database_connection.__globals__["psycopg2"], "connect") as connect:
             database_connection()

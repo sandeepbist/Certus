@@ -13,6 +13,7 @@ from neo4j import GraphDatabase, Query
 from psycopg2.extras import RealDictCursor
 from temporalio.client import Client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+from services.shared.safe_errors import safe_error_summary
 
 
 logger = logging.getLogger("certus_tool_service")
@@ -260,7 +261,10 @@ def search_notes(
                 )
                 rows = cursor.fetchall()
     except psycopg2.Error as error:
-        logger.exception("Note search failed")
+        logger.error(
+            "Note search failed: %s",
+            safe_error_summary(error, operation="workspace note search"),
+        )
         raise ToolUnavailableError("Workspace search is temporarily unavailable") from error
 
     results = [
@@ -326,7 +330,10 @@ def _sync_task_to_graph(task: Dict[str, Any], identity: RequestIdentity) -> str:
             ).consume()
         return "synced"
     except Exception as error:
-        logger.warning("Task graph synchronization degraded: %s", error)
+        logger.warning(
+            "Task graph synchronization degraded: %s",
+            safe_error_summary(error, operation="MCP task graph synchronization"),
+        )
         return "degraded"
 
 
@@ -398,7 +405,10 @@ def create_task(
                     ),
                 )
     except psycopg2.Error as error:
-        logger.exception("Task creation failed")
+        logger.error(
+            "Task creation failed: %s",
+            safe_error_summary(error, operation="MCP task creation"),
+        )
         raise ToolUnavailableError("Task creation is temporarily unavailable") from error
 
     graph_sync = _sync_task_to_graph(task, identity)
@@ -508,7 +518,10 @@ def summarize_document(
     except ToolExecutionError:
         raise
     except psycopg2.Error as error:
-        logger.exception("Document summary lookup failed")
+        logger.error(
+            "Document summary lookup failed: %s",
+            safe_error_summary(error, operation="document summary lookup"),
+        )
         raise ToolUnavailableError("Document summarization is temporarily unavailable") from error
 
     source_text = " ".join(chunk["content"] for chunk in chunks) or (document["parsed_text"] or "")
@@ -603,7 +616,10 @@ async def schedule_reminder(
                     ),
                 )
     except psycopg2.Error as error:
-        logger.exception("Reminder persistence failed")
+        logger.error(
+            "Reminder persistence failed: %s",
+            safe_error_summary(error, operation="reminder persistence"),
+        )
         raise ToolUnavailableError("Reminder scheduling is temporarily unavailable") from error
 
     try:
@@ -628,7 +644,10 @@ async def schedule_reminder(
         temporal_clients.record_start(True)
     except Exception as error:
         temporal_clients.record_start(False)
-        logger.exception("Temporal reminder start failed")
+        logger.error(
+            "Temporal reminder start failed: %s",
+            safe_error_summary(error, operation="Temporal reminder start"),
+        )
         try:
             with database_connection() as connection:
                 with connection.cursor() as cursor:
@@ -640,8 +659,14 @@ async def schedule_reminder(
                         """,
                         (type(error).__name__, reminder_id, identity.tenant_id, identity.user_id),
                     )
-        except psycopg2.Error:
-            logger.exception("Could not mirror failed reminder start")
+        except psycopg2.Error as persistence_error:
+            logger.error(
+                "Could not mirror failed reminder start: %s",
+                safe_error_summary(
+                    persistence_error,
+                    operation="failed reminder status persistence",
+                ),
+            )
         raise ToolUnavailableError("The durable workflow engine could not accept the reminder") from error
 
     try:
@@ -661,7 +686,13 @@ async def schedule_reminder(
                     ),
                 )
     except psycopg2.Error as error:
-        logger.exception("Could not mirror accepted Temporal reminder")
+        logger.error(
+            "Could not mirror accepted Temporal reminder: %s",
+            safe_error_summary(
+                error,
+                operation="accepted reminder status persistence",
+            ),
+        )
         raise ToolUnavailableError(
             "The reminder was accepted, but its local status could not be updated"
         ) from error
@@ -753,7 +784,10 @@ def graph_query(
                     triples.append(f"({root}) -[CO_MENTIONED]- ({target})")
                     connected.add(target)
     except Exception as error:
-        logger.exception("Knowledge graph query failed")
+        logger.error(
+            "Knowledge graph query failed: %s",
+            safe_error_summary(error, operation="MCP knowledge graph query"),
+        )
         raise ToolUnavailableError("Knowledge graph traversal is temporarily unavailable") from error
 
     return {
