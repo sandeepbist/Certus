@@ -43,6 +43,7 @@ from services.shared.worker_runtime import (
     redis_connection_options,
     write_worker_heartbeat,
 )
+from services.shared.safe_errors import safe_error_summary
 
 load_dotenv(REPO_ROOT / ".env")
 
@@ -936,6 +937,7 @@ def release_processing_lease(
     error: Exception,
 ) -> bool:
     outbox_id, _, _, _, _, _, processing_generation = _validated_job_identity(fields)
+    error_summary = safe_error_summary(error, operation="embedding job")
     conn.rollback()
     with conn.cursor() as cursor:
         cursor.execute(
@@ -949,7 +951,7 @@ def release_processing_lease(
               AND processing_owner = %s
             """,
             (
-                str(error)[:1000],
+                error_summary,
                 outbox_id,
                 processing_generation,
                 processing_owner,
@@ -961,6 +963,7 @@ def release_processing_lease(
 
 
 def mark_document_failed(conn, fields: dict, error: Exception):
+    error_summary = safe_error_summary(error, operation="embedding job")
     try:
         (
             outbox_id,
@@ -989,7 +992,7 @@ def mark_document_failed(conn, fields: dict, error: Exception):
               AND status IN ('pending', 'publishing', 'published', 'failed')
             """,
             (
-                str(error)[:1000],
+                error_summary,
                 outbox_id,
                 doc_id,
                 document_version_id,
@@ -1015,7 +1018,7 @@ def mark_document_failed(conn, fields: dict, error: Exception):
               AND processing_generation = %s
             """,
             (
-                str(error)[:1000],
+                error_summary,
                 derivation_id,
                 document_version_id,
                 doc_id,
@@ -1056,7 +1059,7 @@ def mark_document_failed(conn, fields: dict, error: Exception):
                   AND deleted_at IS NULL
                 """,
                 (
-                    str(error)[:1000],
+                    error_summary,
                     doc_id,
                     document_version_id,
                     tenant_id,
@@ -1074,7 +1077,7 @@ def mark_document_failed(conn, fields: dict, error: Exception):
               AND processing_generation = %s
             """,
             (
-                str(error)[:1000],
+                error_summary,
                 document_version_id,
                 doc_id,
                 derivation_id,
@@ -1093,7 +1096,7 @@ def mark_document_failed(conn, fields: dict, error: Exception):
               AND deleted_at IS NULL
             """,
             (
-                str(error)[:1000],
+                error_summary,
                 doc_id,
                 document_version_id,
                 tenant_id,
@@ -1121,13 +1124,14 @@ def process_message(conn, redis_client, message_id: str, fields: dict):
             return conn
         except Exception as error:
             last_error = error
+            error_summary = safe_error_summary(error, operation="embedding job")
             backoff_seconds = 2 ** attempt
             logger.error(
                 "Embedding message %s failed (attempt %s/%s): %s",
                 message_id,
                 attempt,
                 MAX_RETRIES,
-                error,
+                error_summary,
             )
             if lease_state["acquired"]:
                 try:
@@ -1160,10 +1164,11 @@ def process_message(conn, redis_client, message_id: str, fields: dict):
 
     logger.error("Moving embedding message %s to %s", message_id, DLQ_KEY)
     assert last_error is not None
+    last_error_summary = safe_error_summary(last_error, operation="embedding job")
     mark_document_failed(conn, fields, last_error)
     redis_client.xadd(
         DLQ_KEY,
-        {**fields, "error": str(last_error)[:1000]},
+        {**fields, "error": last_error_summary},
         maxlen=EMBEDDING_DLQ_MAX_LENGTH,
         approximate=True,
     )
@@ -1247,7 +1252,10 @@ def process_one_embedding_generation_batch(conn) -> bool:
             ACTIVE_EMBEDDING_PROFILE.identifier,
         )
     except Exception as error:
-        error_message = str(error).strip() or type(error).__name__
+        error_message = safe_error_summary(
+            error,
+            operation="embedding provider request",
+        )
         retry_exponent = min(
             EMBEDDING_GENERATION_MAX_ATTEMPTS - 1,
             max(candidate.attempt_count - 1 for candidate in candidates),
@@ -1510,10 +1518,14 @@ def connect_dependencies():
             redis_client.ping()
             return conn, redis_client
         except Exception as error:
+            error_summary = safe_error_summary(
+                error,
+                operation="embedding dependency connection",
+            )
             logger.warning(
                 "Embedding worker dependency connection failed; retrying in %ss: %s",
                 delay,
-                error,
+                error_summary,
             )
             if conn is not None:
                 conn.close()
@@ -1622,35 +1634,59 @@ def run_worker():
                     STOP_REQUESTED.wait(0.5)
 
             except Exception as loop_error:
-                logger.error("Worker main loop error: %s", loop_error, exc_info=True)
+                logger.error(
+                    "Worker main loop error: %s",
+                    safe_error_summary(loop_error, operation="embedding worker loop"),
+                )
                 if STOP_REQUESTED.is_set():
                     break
                 try:
                     conn = reconnect_database(conn)
                 except Exception as reconnect_error:
-                    logger.warning("Database reconnect failed: %s", reconnect_error)
+                    logger.warning(
+                        "Database reconnect failed: %s",
+                        safe_error_summary(
+                            reconnect_error,
+                            operation="database reconnect",
+                        ),
+                    )
                 STOP_REQUESTED.wait(2)
     finally:
         try:
             record_worker_heartbeat("draining", last_metadata)
         except Exception as error:
-            logger.warning("Could not record draining heartbeat: %s", error)
+            logger.warning(
+                "Could not record draining heartbeat: %s",
+                safe_error_summary(error, operation="draining heartbeat"),
+            )
         try:
             close_openai_client()
         except Exception as error:
-            logger.warning("Could not close the OpenAI client cleanly: %s", error)
+            logger.warning(
+                "Could not close the OpenAI client cleanly: %s",
+                safe_error_summary(error, operation="OpenAI client close"),
+            )
         try:
             conn.close()
         except Exception as error:
-            logger.warning("Could not close the database connection cleanly: %s", error)
+            logger.warning(
+                "Could not close the database connection cleanly: %s",
+                safe_error_summary(error, operation="database connection close"),
+            )
         try:
             r.close()
         except Exception as error:
-            logger.warning("Could not close the Redis connection cleanly: %s", error)
+            logger.warning(
+                "Could not close the Redis connection cleanly: %s",
+                safe_error_summary(error, operation="Redis connection close"),
+            )
         try:
             record_worker_heartbeat("stopped", last_metadata)
         except Exception as error:
-            logger.warning("Could not record stopped heartbeat: %s", error)
+            logger.warning(
+                "Could not record stopped heartbeat: %s",
+                safe_error_summary(error, operation="stopped heartbeat"),
+            )
         logger.info("Embedding worker stopped")
 
 if __name__ == "__main__":

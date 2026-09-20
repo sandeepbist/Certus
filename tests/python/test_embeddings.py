@@ -208,6 +208,35 @@ class EmbeddingProfileTests(unittest.TestCase):
 
 
 class EmbeddingJobContractTests(unittest.TestCase):
+    def test_failure_persistence_drops_exception_instance_data(self):
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.rowcount = 1
+        secret = "sk-proj-persistence-secret"
+        fields = {
+            "outbox_id": "10000000-0000-0000-0000-000000000001",
+            "document_id": "20000000-0000-0000-0000-000000000001",
+            "document_version_id": "21000000-0000-0000-0000-000000000001",
+            "derivation_id": "22000000-0000-0000-0000-000000000001",
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "processing_generation": "30000000-0000-0000-0000-000000000001",
+        }
+
+        embedding_worker.mark_document_failed(
+            connection,
+            fields,
+            RuntimeError(f"Authorization: Bearer {secret}"),
+        )
+
+        persisted_parameters = [
+            value
+            for call in cursor.execute.call_args_list
+            for value in (call.args[1] if len(call.args) > 1 else ())
+        ]
+        self.assertNotIn(secret, str(persisted_parameters))
+        self.assertIn("embedding job failed (RuntimeError)", persisted_parameters)
+
     def test_accepts_a_generation_scoped_outbox_job(self):
         parsed = _validated_job_fields({
             "outbox_id": "10000000-0000-0000-0000-000000000001",
@@ -303,6 +332,46 @@ class EmbeddingJobContractTests(unittest.TestCase):
         mark_failed.assert_called_once()
         redis_client.xadd.assert_called_once()
         acknowledge.assert_called_once_with(redis_client, "3-0")
+
+    def test_provider_exception_data_never_reaches_logs_or_the_dlq(self):
+        connection = object()
+        redis_client = MagicMock()
+        secret = "sk-proj-provider-secret"
+        provider_error = RuntimeError(
+            f"Authorization: Bearer {secret} at https://provider.invalid"
+        )
+
+        with (
+            patch.object(embedding_worker, "MAX_RETRIES", 1),
+            patch.object(
+                embedding_worker,
+                "process_batch",
+                side_effect=provider_error,
+            ),
+            patch.object(
+                embedding_worker,
+                "reconnect_database",
+                return_value=connection,
+            ),
+            patch.object(embedding_worker, "mark_document_failed"),
+            patch.object(embedding_worker, "acknowledge_message"),
+            self.assertLogs("embedding_worker", level="ERROR") as captured,
+        ):
+            embedding_worker.process_message(
+                connection,
+                redis_client,
+                "4-0",
+                {"outbox_id": "job"},
+            )
+
+        dlq_payload = redis_client.xadd.call_args.args[1]
+        self.assertEqual(
+            dlq_payload["error"],
+            "embedding job failed (RuntimeError)",
+        )
+        self.assertNotIn(secret, "\n".join(captured.output))
+        self.assertNotIn("provider.invalid", "\n".join(captured.output))
+        self.assertNotIn(secret, str(dlq_payload))
 
     def test_releases_its_lease_before_an_immediate_retry(self):
         connection = object()
