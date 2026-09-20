@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import { Redis } from 'ioredis';
 import { WebSocket } from 'ws';
 import { z } from 'zod';
+import { safeErrorFields } from '../utils/safeErrors.js';
 
 const GATEWAY_STREAM_KEY = 'realtime:gateway';
 const BLOCK_TIMEOUT_MS = 2_000;
@@ -101,7 +102,10 @@ export class RealtimeBroker {
       const now = Date.now();
       if (now - this.lastRedisErrorLogAt < REDIS_ERROR_LOG_INTERVAL_MS) return;
       this.lastRedisErrorLogAt = now;
-      this.logger.error({ err: error }, 'Realtime Redis connection unavailable');
+      this.logger.error(
+        safeErrorFields(error, 'realtime Redis connection'),
+        'Realtime Redis connection unavailable',
+      );
     });
   }
 
@@ -193,7 +197,10 @@ export class RealtimeBroker {
         }
       } catch (error) {
         if (this.stopped) return;
-        this.logger.warn({ err: error }, 'Realtime Redis stream read failed; retrying');
+        this.logger.warn(
+          safeErrorFields(error, 'realtime Redis stream read'),
+          'Realtime Redis stream read failed; retrying',
+        );
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
         retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
       }
