@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 const repositoryRoot = path.resolve(import.meta.dir, '../..');
@@ -20,8 +20,17 @@ describe('repository security workflow', () => {
 
   test('blocks vulnerable dependency additions and pins every action by commit', () => {
     expect(securityWorkflow).toContain('fail-on-severity: moderate');
+    expect(securityWorkflow).toContain('inputs: requirements-dev.lock');
+    expect(securityWorkflow).toContain('require-hashes: true');
+    expect(securityWorkflow).toContain('disable-pip: true');
+    expect(securityWorkflow).toContain('no-deps: true');
 
-    const actionReferences = [...securityWorkflow.matchAll(/^\s*uses:\s+[^@\s]+@([^\s#]+)/gm)];
+    const workflowDirectory = path.join(repositoryRoot, '.github/workflows');
+    const workflows = readdirSync(workflowDirectory)
+      .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+      .map((name) => readFileSync(path.join(workflowDirectory, name), 'utf8'))
+      .join('\n');
+    const actionReferences = [...workflows.matchAll(/^\s*uses:\s+[^@\s]+@([^\s#]+)/gm)];
     expect(actionReferences.length).toBeGreaterThan(0);
     for (const [, revision] of actionReferences) {
       expect(revision).toMatch(/^[a-f0-9]{40}$/);

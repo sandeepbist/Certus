@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY services/embedding/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
+COPY services/embedding/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r requirements.lock
 
 COPY services/embedding/app/ ./app/
 COPY services/shared/ ./services/shared/

@@ -18,6 +18,7 @@
     "test": "bun test tests/unit",
     "test:python": "bash scripts/check-python.sh",
     "check:python": "bash scripts/check-python.sh",
+    "lock:python": "bash scripts/compile-python-locks.sh",
     "eval:retrieval": "python3 scripts/evaluate-retrieval.py --check",
     "eval:pgvector": "bash scripts/evaluate-pgvector-recall.sh --check",
     "eval:embedding-generations": "bash scripts/evaluate-embedding-generations.sh --check",

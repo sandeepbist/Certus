@@ -88,14 +88,17 @@ describe('container build contracts', () => {
   test('the MCP image uses repository-root source paths', () => {
     const dockerfile = readRepositoryFile('services/mcp-tools/Dockerfile');
 
-    expect(dockerfile).toContain('services/mcp-tools/requirements.txt');
+    expect(dockerfile).toContain('services/mcp-tools/requirements.lock');
     expect(dockerfile).toContain('services/mcp-tools/app/');
+    expect(dockerfile).toContain('services/shared/');
   });
 
   test('the embedding image excludes compilers and constrains dependency majors', () => {
     const dockerfile = readRepositoryFile('services/embedding/Dockerfile');
     const requirements = readRepositoryFile('services/embedding/requirements.txt');
 
+    expect(dockerfile).toContain('requirements.lock');
+    expect(dockerfile).toContain('--require-hashes');
     expect(dockerfile).toContain('--only-binary=:all:');
     expect(dockerfile).not.toContain('build-essential');
     expect(dockerfile).not.toContain('apt-get');
@@ -108,11 +111,25 @@ describe('container build contracts', () => {
     const dockerfile = readRepositoryFile('services/ingestion/Dockerfile');
     const requirements = readRepositoryFile('services/ingestion/requirements.txt');
 
+    expect(dockerfile).toContain('requirements.lock');
+    expect(dockerfile).toContain('--require-hashes');
     expect(dockerfile).toContain('--only-binary=:all:');
     expect(dockerfile).not.toContain('build-essential');
     expect(dockerfile).not.toContain('apt-get');
     for (const upperBound of ['fastapi>=0.141.1,<1', 'neo4j>=6.3.0,<7', 'pydantic>=2.13.4,<3']) {
       expect(requirements).toContain(upperBound);
+    }
+  });
+
+  test('every Python image installs only hash-verified wheels from its lock', () => {
+    for (const service of ['embedding', 'ingestion', 'mcp-tools', 'orchestration', 'workflows']) {
+      const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
+
+      expect(dockerfile).toContain(`services/${service}/requirements.lock`);
+      expect(dockerfile).toContain('--require-hashes');
+      expect(dockerfile).toContain('--only-binary=:all:');
+      expect(dockerfile).not.toContain('build-essential');
+      expect(dockerfile).not.toContain('apt-get');
     }
   });
 

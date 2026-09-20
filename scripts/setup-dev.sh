@@ -79,7 +79,7 @@ if [ ! -x .venv/bin/python ]; then
 fi
 echo "📦 Installing Python service dependencies into .venv..."
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pip install --require-hashes -r requirements-dev.lock
 
 # 4. Start local infrastructure. Application services run as local processes so
 # reload behavior is fast and their logs remain visible in one terminal.
