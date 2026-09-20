@@ -342,6 +342,10 @@ class EmbeddingGenerationWorkerLoopTests(unittest.TestCase):
                 embedding_worker.EMBEDDING_GENERATION_RETRY_BASE_SECONDS * 4,
             ),
         )
+        self.assertEqual(
+            record_failure.call_args.kwargs["error_message"],
+            "embedding provider request failed (RuntimeError)",
+        )
 
     def test_stale_provider_result_is_discarded_without_overwriting(self):
         connection = MagicMock()
