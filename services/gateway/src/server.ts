@@ -28,6 +28,7 @@ import { handleNotificationConnection } from './websocket/notificationHandler.js
 import { RealtimeBroker } from './websocket/realtimeBroker.js';
 import { handleRealtimeConnection } from './websocket/realtimeHandler.js';
 import { assertInternalServiceConfiguration } from './utils/internalService.js';
+import { safeErrorFields } from './utils/safeErrors.js';
 
 assertInternalServiceConfiguration();
 
@@ -146,7 +147,10 @@ async function start() {
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
   } catch (err) {
-    console.error('Fatal error during Gateway startup:', err);
+    console.error(
+      'Fatal error during Gateway startup:',
+      safeErrorFields(err, 'gateway startup'),
+    );
     process.exit(1);
   }
 }

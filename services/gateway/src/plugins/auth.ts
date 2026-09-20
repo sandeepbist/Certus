@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { AuthUserContext } from '../types/index.js';
 import { apiKeyAuthorizesMethod } from '../utils/apiKeyScopes.js';
+import { safeErrorFields } from '../utils/safeErrors.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -101,7 +102,10 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
     try {
       authResponse = await requestAuthContext(request, authServiceUrl);
     } catch (error) {
-      request.log.error({ err: error }, 'Authentication service unavailable');
+      request.log.error(
+        safeErrorFields(error, 'authentication service request'),
+        'Authentication service unavailable',
+      );
       return authFailure(reply, 503);
     }
     if (!authResponse) return authFailure(reply, 401);
@@ -119,7 +123,10 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
     try {
       authPayload = await authResponse.json();
     } catch (error) {
-      request.log.error({ err: error }, 'Authentication service returned malformed JSON');
+      request.log.error(
+        safeErrorFields(error, 'authentication response parsing'),
+        'Authentication service returned malformed JSON',
+      );
       return authFailure(reply, 503);
     }
 

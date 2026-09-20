@@ -8,7 +8,7 @@ import { toolRoutes } from '../../services/gateway/src/routes/tools';
 import { sendServiceUnavailable } from '../../services/gateway/src/utils/serviceUnavailable';
 
 describe('Gateway internal-service error boundary', () => {
-  test('logs the original failure but returns only the stable public message', () => {
+  test('logs only a safe failure category and returns the stable public message', () => {
     const internalError = new Error(
       'connect ECONNREFUSED http://internal-user:secret@orchestration:8002',
     );
@@ -46,9 +46,15 @@ describe('Gateway internal-service error boundary', () => {
     });
     expect(JSON.stringify(body)).not.toContain('secret');
     expect(logRecords).toEqual([{
-      record: { err: internalError, service: 'orchestration' },
+      record: {
+        operation: 'internal service request',
+        errorType: 'Error',
+        service: 'orchestration',
+      },
       message: 'Internal service request failed',
     }]);
+    expect(JSON.stringify(logRecords)).not.toContain('secret');
+    expect(JSON.stringify(logRecords)).not.toContain('internal-user');
   });
 
   test('no HTTP route projects a caught Error.message into a public response', () => {

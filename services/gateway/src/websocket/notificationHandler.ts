@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { requireAuthContext } from '../utils/authContext.js';
 import { internalServiceFetch } from '../utils/internalService.js';
+import { safeErrorFields } from '../utils/safeErrors.js';
 import { NotificationBroker } from './notificationBroker.js';
 
 const ORCHESTRATION_SERVICE_URL = process.env.ORCHESTRATION_SERVICE_URL || 'http://localhost:8002';
@@ -71,7 +72,10 @@ export function handleNotificationConnection(
   });
 
   socket.on('error', (error) => {
-    request.log.warn({ err: error }, 'Notification WebSocket connection failed');
+    request.log.warn(
+      safeErrorFields(error, 'notification WebSocket connection'),
+      'Notification WebSocket connection failed',
+    );
   });
 
   const heartbeat = setInterval(() => {
@@ -102,7 +106,10 @@ export function handleNotificationConnection(
       const summary = notificationSummarySchema.parse(await response.json());
       sendJson(socket, { type: 'notifications.sync', data: summary });
     } catch (error) {
-      request.log.warn({ err: error }, 'Initial WebSocket notification sync failed');
+      request.log.warn(
+        safeErrorFields(error, 'initial notification synchronization'),
+        'Initial WebSocket notification sync failed',
+      );
       sendJson(socket, {
         type: 'notifications.sync_error',
         message: 'Notifications will resynchronize automatically.',

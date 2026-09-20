@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { requireAuthContext } from '../utils/authContext.js';
 import { internalServiceFetch } from '../utils/internalService.js';
+import { safeErrorFields } from '../utils/safeErrors.js';
 
 const ORCHESTRATION_SERVICE_URL = process.env.ORCHESTRATION_SERVICE_URL || 'http://localhost:8002';
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -53,7 +54,10 @@ export function handleWebSocketConnection(socket: WebSocket, request: FastifyReq
       socket.send(JSON.stringify(payload));
       return true;
     } catch (error) {
-      request.log.warn({ err: error }, 'Chat WebSocket send failed');
+      request.log.warn(
+        safeErrorFields(error, 'chat WebSocket send'),
+        'Chat WebSocket send failed',
+      );
       upstreamController?.abort();
       return false;
     }
@@ -190,7 +194,10 @@ export function handleWebSocketConnection(socket: WebSocket, request: FastifyReq
           message: 'The chat stream was cancelled.',
         });
       } else {
-        request.log.error({ err: error }, 'WebSocket orchestration stream failed');
+        request.log.error(
+          safeErrorFields(error, 'WebSocket orchestration stream'),
+          'WebSocket orchestration stream failed',
+        );
         sendJson({
           type: 'error',
           code: 'ORCHESTRATION_UNAVAILABLE',
@@ -242,7 +249,10 @@ export function handleWebSocketConnection(socket: WebSocket, request: FastifyReq
   });
 
   socket.on('error', (error) => {
-    request.log.warn({ err: error }, 'Chat WebSocket connection failed');
+    request.log.warn(
+      safeErrorFields(error, 'chat WebSocket connection'),
+      'Chat WebSocket connection failed',
+    );
     upstreamController?.abort();
   });
 

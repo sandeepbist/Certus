@@ -7,6 +7,7 @@ import {
   clientDisconnectSignal,
   observedInternalServiceFetch,
 } from '../utils/internalService.js';
+import { safeErrorFields } from '../utils/safeErrors.js';
 
 interface ChatRequestBody {
   query: string;
@@ -122,8 +123,11 @@ export const chatRoutes: FastifyPluginAsync = async (fastify) => {
         }));
         return reply.status(res.status).send(body);
       });
-    } catch (error: any) {
-      request.log.error({ err: error }, 'Orchestration request failed');
+    } catch (error: unknown) {
+      request.log.error(
+        safeErrorFields(error, 'orchestration chat request'),
+        'Orchestration request failed',
+      );
       return reply.status(503).send({
         error: 'Service Unavailable',
         message: 'The orchestration service is unavailable. Please try again.',

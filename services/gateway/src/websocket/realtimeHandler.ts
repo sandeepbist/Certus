@@ -3,6 +3,7 @@ import { WebSocket } from 'ws';
 import { z } from 'zod';
 
 import { requireAuthContext } from '../utils/authContext.js';
+import { safeErrorFields } from '../utils/safeErrors.js';
 import {
   RealtimeBroker,
   realtimeChannelSchema,
@@ -39,7 +40,10 @@ export function handleRealtimeConnection(
     try {
       socket.send(JSON.stringify(payload));
     } catch (error) {
-      request.log.warn({ err: error }, 'Realtime WebSocket send failed');
+      request.log.warn(
+        safeErrorFields(error, 'realtime WebSocket send'),
+        'Realtime WebSocket send failed',
+      );
       socket.terminate();
     }
   };
@@ -92,7 +96,10 @@ export function handleRealtimeConnection(
   });
 
   socket.on('error', (error) => {
-    request.log.warn({ err: error }, 'Realtime WebSocket connection failed');
+    request.log.warn(
+      safeErrorFields(error, 'realtime WebSocket connection'),
+      'Realtime WebSocket connection failed',
+    );
   });
 
   const heartbeat = setInterval(() => {
