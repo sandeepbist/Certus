@@ -1,6 +1,6 @@
 # Build from the repository root so the committed workspace lockfile is the
 # only dependency authority: docker build -f services/web/Dockerfile .
-FROM oven/bun:1.4.0-alpine AS dependencies
+FROM oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb AS dependencies
 
 WORKDIR /app
 COPY package.json bun.lock bunfig.toml ./
@@ -16,7 +16,7 @@ COPY services/web/ ./services/web/
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN bun run --filter web build
 
-FROM oven/bun:1.4.0-alpine AS runner
+FROM oven/bun:1.4.0-alpine@sha256:07235578f79ef8c6f97d94aee7938e76f5cdba5f21ae5dbfdd3d3d38058437eb AS runner
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

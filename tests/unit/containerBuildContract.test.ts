@@ -6,6 +6,18 @@ const repositoryRoot = path.resolve(import.meta.dir, '../..');
 const readRepositoryFile = (relativePath: string) =>
   readFileSync(path.join(repositoryRoot, relativePath), 'utf8');
 
+const applicationServices = [
+  'embedding',
+  'gateway',
+  'ingestion',
+  'mcp-tools',
+  'orchestration',
+  'web',
+  'workflows',
+] as const;
+
+const immutableImagePattern = /^[^\s@]+:[^\s@]+@sha256:[a-f0-9]{64}$/;
+
 describe('container build contracts', () => {
   test('the root context sends only locked manifests and service sources', () => {
     const dockerIgnore = readRepositoryFile('.dockerignore');
@@ -29,6 +41,48 @@ describe('container build contracts', () => {
       expect(dockerfile).toContain('bun install --frozen-lockfile');
       expect(dockerfile).not.toContain('||');
       expect(dockerfile).toContain('USER certus');
+    }
+  });
+
+  test('every external container image is pinned by tag and immutable digest', () => {
+    for (const service of applicationServices) {
+      const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
+      const stages = new Set<string>();
+      const externalImages: string[] = [];
+
+      for (const match of dockerfile.matchAll(/^FROM\s+(\S+)(?:\s+AS\s+(\S+))?/gim)) {
+        const image = match[1];
+        const alias = match[2];
+        if (!stages.has(image)) {
+          externalImages.push(image);
+        }
+        if (alias) {
+          stages.add(alias);
+        }
+      }
+
+      expect(externalImages.length).toBeGreaterThan(0);
+      for (const image of externalImages) {
+        expect(image).toMatch(immutableImagePattern);
+      }
+    }
+
+    const compose = readRepositoryFile('docker-compose.yml');
+    const composeImages = [...compose.matchAll(/^\s+image:\s+(\S+)/gm)].map((match) => match[1]);
+
+    expect(composeImages.length).toBeGreaterThan(0);
+    for (const image of composeImages) {
+      expect(image).toMatch(immutableImagePattern);
+    }
+  });
+
+  test('Dependabot monitors both Dockerfiles and the Compose manifest', () => {
+    const dependabot = readRepositoryFile('.github/dependabot.yml');
+
+    expect(dependabot).toContain('package-ecosystem: docker');
+    expect(dependabot).toContain('package-ecosystem: docker-compose');
+    for (const service of applicationServices) {
+      expect(dependabot).toContain(`- /services/${service}`);
     }
   });
 
@@ -134,15 +188,7 @@ describe('container build contracts', () => {
   });
 
   test('every application image runs as a dedicated non-root user', () => {
-    for (const service of [
-      'embedding',
-      'gateway',
-      'ingestion',
-      'mcp-tools',
-      'orchestration',
-      'web',
-      'workflows',
-    ]) {
+    for (const service of applicationServices) {
       const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
 
       expect(dockerfile).toContain('USER certus');
