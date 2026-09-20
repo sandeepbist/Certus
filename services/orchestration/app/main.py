@@ -32,6 +32,7 @@ from app.api.embedding_generations import router as embedding_generations_router
 from app.core.db import DatabasePoolTimeout, close_db_pool, get_db_cursor
 from app.core.runtime import close_runtime_resources
 from app.retrieval.graphrag import close_graph_driver
+from services.shared.safe_errors import safe_error_summary
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("orchestration_service")
@@ -41,9 +42,19 @@ logger = logging.getLogger("orchestration_service")
 async def lifespan(_app: FastAPI):
     yield
     # Retrieval workers finish/cancel before their shared transports are closed.
-    close_runtime_resources()
-    close_graph_driver()
-    close_db_pool()
+    for resource_name, close_resource in (
+        ("retrieval runtime", close_runtime_resources),
+        ("graph driver", close_graph_driver),
+        ("database pool", close_db_pool),
+    ):
+        try:
+            close_resource()
+        except Exception as error:
+            logger.error(
+                "Could not close orchestration %s: %s",
+                resource_name,
+                safe_error_summary(error, operation="orchestration resource shutdown"),
+            )
 
 app = FastAPI(
     title="Certus Orchestration & Cognitive Architecture Service",
@@ -62,9 +73,13 @@ if not 15 <= WORKER_HEARTBEAT_STALE_SECONDS <= 300:
 
 @app.exception_handler(DatabasePoolTimeout)
 async def database_pool_timeout_handler(_request: Request, error: DatabasePoolTimeout):
+    logger.warning(
+        "Database request admission failed: %s",
+        safe_error_summary(error, operation="orchestration database admission"),
+    )
     return JSONResponse(
         status_code=503,
-        content={"detail": str(error)},
+        content={"detail": "The orchestration database is temporarily at capacity."},
         headers={"Retry-After": "1"},
     )
 

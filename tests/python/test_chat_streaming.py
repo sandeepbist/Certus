@@ -1289,6 +1289,33 @@ class RuntimeResourceContractTests(unittest.TestCase):
         runtime_module.close_runtime_resources()
         client.close.assert_called_once()
 
+    def test_runtime_shutdown_is_failure_isolated_and_redacts_diagnostics(self):
+        secret = "sk-proj-shutdown-private"
+        executor = MagicMock()
+        executor.shutdown.side_effect = RuntimeError(secret)
+        failing_client = MagicMock()
+        failing_client.close.side_effect = RuntimeError(secret)
+        healthy_client = MagicMock()
+
+        with (
+            patch.object(runtime_module, "_retrieval_executor", executor),
+            patch.object(
+                runtime_module,
+                "_openai_clients",
+                {("first",): failing_client, ("second",): healthy_client},
+            ),
+            self.assertLogs("orchestration_runtime", level="ERROR") as captured,
+        ):
+            runtime_module.close_runtime_resources()
+
+        executor.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
+        failing_client.close.assert_called_once()
+        healthy_client.close.assert_called_once()
+        diagnostics = "\n".join(captured.output)
+        self.assertIn("retrieval executor shutdown failed (RuntimeError)", diagnostics)
+        self.assertIn("model client shutdown failed (RuntimeError)", diagnostics)
+        self.assertNotIn(secret, diagnostics)
+
     def test_database_pool_resets_transaction_and_returns_connection(self):
         connection = MagicMock()
         connection.closed = 0

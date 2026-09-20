@@ -16,6 +16,7 @@ from app.agents.graph import (
 )
 from app.core.identity import RequestIdentity, require_request_identity
 from app.core.db import get_db_cursor
+from services.shared.safe_errors import safe_error_summary
 
 router = APIRouter(prefix="", tags=["Chat & Streaming"])
 logger = logging.getLogger("orchestration_chat")
@@ -145,7 +146,10 @@ async def chat_stream_endpoint(
                         "message": str(error),
                     })
             except Exception as error:
-                logger.exception("Streaming agent run failed", exc_info=error)
+                logger.error(
+                    "Streaming agent run failed: %s",
+                    safe_error_summary(error, operation="streaming agent run"),
+                )
                 if not cancelled.is_set():
                     emit_event({
                         "type": "error",

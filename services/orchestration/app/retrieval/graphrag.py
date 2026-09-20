@@ -4,6 +4,8 @@ import logging
 from threading import Lock
 from typing import List, Dict, Any, Set
 
+from services.shared.safe_errors import safe_error_summary
+
 logger = logging.getLogger("graphrag")
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -174,6 +176,9 @@ class GraphRAGEngine:
                 "relationships_count": len(triples),
                 "depth": depth,
             }
-        except Exception as e:
-            logger.warning(f"GraphRAG traversal error: {e}")
+        except Exception as error:
+            logger.warning(
+                "GraphRAG traversal error: %s",
+                safe_error_summary(error, operation="GraphRAG traversal"),
+            )
             return {"graph_triples": [], "connected_entities": [], "relationships_count": 0}

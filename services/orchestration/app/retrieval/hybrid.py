@@ -31,6 +31,7 @@ from services.shared.embeddings import (
     has_usable_openai_api_key,
     local_lexical_embedding,
 )
+from services.shared.safe_errors import safe_error_summary
 from services.shared.document_retrieval import (
     DEFAULT_SEMANTIC_CANDIDATE_LIMIT,
     MAX_SEMANTIC_CANDIDATE_LIMIT,
@@ -452,7 +453,7 @@ class HybridSearchEngine:
                     )
                     logger.warning(
                         "Semantic retrieval unavailable; using keyword search: %s",
-                        error,
+                        safe_error_summary(error, operation="semantic retrieval"),
                     )
 
                 # 2. Keep indexed FTS separate from the bounded literal phrase
