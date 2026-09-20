@@ -4,6 +4,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { gatewayFetch, gatewayWebSocketUrl } from '@/lib/gateway-client';
 
+export interface ClaimAlignedSpan {
+  claimId: string;
+  profile: 'certus_claim_aligned_sentence_span:unicode_code_point:v1';
+  selectionStatus: 'claim_aligned' | 'full_chunk_fallback';
+  quote: string;
+  quoteSha256: string;
+  relativeStartChar: number;
+  relativeEndChar: number;
+  startChar?: number;
+  endChar?: number;
+  textLocatorStatus: 'exact' | 'unavailable';
+  semanticEntailmentChecked: false;
+}
+
 export interface Citation {
   evidenceId?: string;
   claimIds?: string[];
@@ -28,6 +42,7 @@ export interface Citation {
   quoteSha256?: string;
   supportScope?: 'retrieved_context_not_claim_aligned' | 'atomic_claim_selected';
   verificationStatus?: 'mechanical_checks_passed_semantic_not_evaluated';
+  claimSpans?: ClaimAlignedSpan[];
 }
 
 export interface ClaimEvidence {
@@ -37,6 +52,7 @@ export interface ClaimEvidence {
     sourceId: string;
     sourceKind: 'document' | 'memory' | 'graph' | 'tool';
     contentSha256: string;
+    claimSpanSha256?: string;
   }>;
   mechanicalValidation: {
     status: 'passed';
@@ -126,6 +142,61 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function normalizeClaimSpans(value: unknown): ClaimAlignedSpan[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 24) return [];
+  return value.flatMap((item) => {
+    const span = asRecord(item);
+    if (!span) return [];
+    const claimId = span.claim_id ?? span.claimId;
+    const selectionStatus = span.selection_status ?? span.selectionStatus;
+    const quoteSha256 = span.quote_sha256 ?? span.quoteSha256;
+    const relativeStartChar = span.relative_start_char ?? span.relativeStartChar;
+    const relativeEndChar = span.relative_end_char ?? span.relativeEndChar;
+    const startChar = span.start_char ?? span.startChar;
+    const endChar = span.end_char ?? span.endChar;
+    const textLocatorStatus = span.text_locator_status ?? span.textLocatorStatus;
+    const semanticEntailmentChecked = span.semantic_entailment_checked
+      ?? span.semanticEntailmentChecked;
+    if (
+      typeof claimId !== 'string'
+      || !/^C[1-9][0-9]{0,2}$/.test(claimId)
+      || span.profile !== 'certus_claim_aligned_sentence_span:unicode_code_point:v1'
+      || !['claim_aligned', 'full_chunk_fallback'].includes(String(selectionStatus))
+      || typeof span.quote !== 'string'
+      || span.quote.length === 0
+      || typeof quoteSha256 !== 'string'
+      || !/^[0-9a-f]{64}$/.test(quoteSha256)
+      || !Number.isInteger(relativeStartChar)
+      || !Number.isInteger(relativeEndChar)
+      || Number(relativeStartChar) < 0
+      || Number(relativeEndChar) <= Number(relativeStartChar)
+      || !['exact', 'unavailable'].includes(String(textLocatorStatus))
+      || semanticEntailmentChecked !== false
+      || (textLocatorStatus === 'exact'
+        && (!Number.isInteger(startChar)
+          || !Number.isInteger(endChar)
+          || Number(endChar) <= Number(startChar)))
+      || (textLocatorStatus === 'unavailable'
+        && (startChar !== undefined && startChar !== null
+          || endChar !== undefined && endChar !== null))
+    ) return [];
+    return [{
+      claimId,
+      profile: 'certus_claim_aligned_sentence_span:unicode_code_point:v1' as const,
+      selectionStatus: selectionStatus as 'claim_aligned' | 'full_chunk_fallback',
+      quote: span.quote,
+      quoteSha256,
+      relativeStartChar: Number(relativeStartChar),
+      relativeEndChar: Number(relativeEndChar),
+      ...(typeof startChar === 'number' ? { startChar } : {}),
+      ...(typeof endChar === 'number' ? { endChar } : {}),
+      textLocatorStatus: textLocatorStatus as 'exact' | 'unavailable',
+      semanticEntailmentChecked: false as const,
+    }];
+  });
+}
+
 export function normalizeCitations(value: unknown): Citation[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
@@ -149,11 +220,29 @@ export function normalizeCitations(value: unknown): Citation[] {
     const evidenceId = citation.evidence_id ?? citation.evidenceId;
     const claimIds = citation.claim_ids ?? citation.claimIds;
     const verificationStatus = citation.verification_status ?? citation.verificationStatus;
+    const claimSpanProfile = citation.claim_span_profile ?? citation.claimSpanProfile;
+    const rawClaimSpans = citation.claim_spans ?? citation.claimSpans;
+    const claimSpans = normalizeClaimSpans(rawClaimSpans);
     if (
       typeof chunkId !== 'string'
       || typeof documentId !== 'string'
       || typeof documentTitle !== 'string'
     ) return [];
+    if (claimSpanProfile !== undefined) {
+      const normalizedClaimIds = Array.isArray(claimIds)
+        ? [...claimIds].sort().join(',')
+        : '';
+      const normalizedSpanClaimIds = claimSpans && claimSpans.length > 0
+        ? claimSpans.map((span) => span.claimId).sort().join(',')
+        : '';
+      if (
+        claimSpanProfile !== 'certus_claim_aligned_sentence_span:unicode_code_point:v1'
+        || !Array.isArray(rawClaimSpans)
+        || claimSpans === undefined
+        || claimSpans.length !== rawClaimSpans.length
+        || normalizedClaimIds !== normalizedSpanClaimIds
+      ) return [];
+    }
     if (
       supportScope === 'atomic_claim_selected'
       && (
@@ -203,6 +292,7 @@ export function normalizeCitations(value: unknown): Citation[] {
       ...(verificationStatus === 'mechanical_checks_passed_semantic_not_evaluated'
         ? { verificationStatus }
         : {}),
+      ...(claimSpans && claimSpans.length > 0 ? { claimSpans } : {}),
     }];
   });
 }
@@ -233,17 +323,21 @@ export function normalizeClaims(value: unknown): ClaimEvidence[] {
       const sourceId = sourceRef?.source_id ?? sourceRef?.sourceId;
       const sourceKind = sourceRef?.source_kind ?? sourceRef?.sourceKind;
       const contentSha256 = sourceRef?.content_sha256 ?? sourceRef?.contentSha256;
+      const claimSpanSha256 = sourceRef?.claim_span_sha256 ?? sourceRef?.claimSpanSha256;
       if (
         typeof sourceId !== 'string'
         || !/^[DMGT][1-9][0-9]{0,2}$/.test(sourceId)
         || !['document', 'memory', 'graph', 'tool'].includes(String(sourceKind))
         || typeof contentSha256 !== 'string'
         || !/^[0-9a-f]{64}$/.test(contentSha256)
+        || (claimSpanSha256 !== undefined
+          && (typeof claimSpanSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(claimSpanSha256)))
       ) return [];
       return [{
         sourceId,
         sourceKind: sourceKind as 'document' | 'memory' | 'graph' | 'tool',
         contentSha256,
+        ...(typeof claimSpanSha256 === 'string' ? { claimSpanSha256 } : {}),
       }];
     });
     if (sourceRefs.length !== sourceRefsValue.length) return [];

@@ -13,6 +13,7 @@ EVIDENCE_MANIFEST_PROFILE = "certus_typed_evidence_manifest:v1"
 GENERATION_PROFILE = "certus_grounded_generation:v1"
 PROMPT_PROFILE = "certus_atomic_claim_prompt:v1"
 VALIDATOR_PROFILE = "certus_mechanical_claim_validator:v1"
+CLAIM_SPAN_PROFILE = "certus_claim_aligned_sentence_span:unicode_code_point:v1"
 GENERATION_SCHEMA_NAME = "certus_atomic_claim_answer"
 GENERATION_MAX_OUTPUT_TOKENS = 1_200
 MAX_CLAIMS = 12
@@ -78,6 +79,7 @@ _EXACT_VALUE_RE = re.compile(
 )
 _QUOTED_TEXT_RE = re.compile(r'["“]([^"”]{2,300})["”]')
 _NEGATIONS = {"no", "not", "never", "without", "cannot", "can't", "isn't", "wasn't", "won't"}
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?]+[\"”’')\]]*(?=\s|$)|\n{2,}")
 _SENSITIVE_FIELD_RE = re.compile(
     r"^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|cookie|password|secret|credential)$",
     re.IGNORECASE,
@@ -423,7 +425,127 @@ def _validate_claim_text(claim_text: str, sources: Sequence[Mapping[str, Any]]) 
     }
 
 
-def _citation_from_document_source(source: Mapping[str, Any]) -> Dict[str, Any]:
+def _trimmed_sentence_spans(content: str) -> List[tuple[int, int]]:
+    """Return deterministic sentence-like spans without changing code-point offsets."""
+    spans: List[tuple[int, int]] = []
+    cursor = 0
+    for boundary in _SENTENCE_BOUNDARY_RE.finditer(content):
+        segment_start = cursor
+        segment_end = boundary.end()
+        while segment_start < segment_end and content[segment_start].isspace():
+            segment_start += 1
+        while segment_end > segment_start and content[segment_end - 1].isspace():
+            segment_end -= 1
+        if segment_start < segment_end:
+            spans.append((segment_start, segment_end))
+        cursor = boundary.end()
+    segment_start = cursor
+    segment_end = len(content)
+    while segment_start < segment_end and content[segment_start].isspace():
+        segment_start += 1
+    while segment_end > segment_start and content[segment_end - 1].isspace():
+        segment_end -= 1
+    if segment_start < segment_end:
+        spans.append((segment_start, segment_end))
+    return spans
+
+
+def _claim_aligned_document_span(
+    claim_id: str,
+    claim_text: str,
+    source: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Select the smallest sentence window preserving this source's mechanical signals."""
+    chunk = source["payload"]
+    content = str(source["content"])
+    claim_tokens = _significant_tokens(claim_text)
+    contributed_tokens = claim_tokens & _significant_tokens(content)
+    contributed_anchors = [
+        anchor
+        for anchor in _exact_anchors(claim_text)
+        if _normalize_text(anchor) in _normalize_text(content)
+    ]
+    contributed_negations = (
+        _NEGATIONS & set(_normalize_text(claim_text).split())
+        & set(_normalize_text(content).split())
+    )
+
+    relative_start = 0
+    relative_end = len(content)
+    selection_status = "full_chunk_fallback"
+    spans = _trimmed_sentence_spans(content)
+    has_alignment_signal = bool(
+        contributed_tokens or contributed_anchors or contributed_negations
+    )
+    candidates: List[tuple[int, int, int]] = []
+    if has_alignment_signal:
+        for start_index, (start, _) in enumerate(spans):
+            for end_index in range(start_index, len(spans)):
+                end = spans[end_index][1]
+                candidate = content[start:end]
+                normalized_candidate = _normalize_text(candidate)
+                if not contributed_tokens <= _significant_tokens(candidate):
+                    continue
+                if any(
+                    _normalize_text(anchor) not in normalized_candidate
+                    for anchor in contributed_anchors
+                ):
+                    continue
+                if not contributed_negations <= set(normalized_candidate.split()):
+                    continue
+                candidates.append((end - start, start, end))
+                break
+
+    if candidates:
+        _, relative_start, relative_end = min(candidates)
+        if relative_start > 0 or relative_end < len(content):
+            selection_status = "claim_aligned"
+
+    quote = content[relative_start:relative_end]
+    locator_status = str(chunk.get("text_locator_status") or "unavailable")
+    absolute_start: int | None = None
+    absolute_end: int | None = None
+    if locator_status == "exact":
+        chunk_start = chunk.get("start_char")
+        chunk_end = chunk.get("end_char")
+        if (
+            not isinstance(chunk_start, int)
+            or isinstance(chunk_start, bool)
+            or not isinstance(chunk_end, int)
+            or isinstance(chunk_end, bool)
+            or chunk_start < 0
+            or chunk_end - chunk_start != len(content)
+        ):
+            raise GroundingValidationError(
+                "Exact document evidence has inconsistent chunk text bounds"
+            )
+        absolute_start = chunk_start + relative_start
+        absolute_end = chunk_start + relative_end
+
+    return {
+        "claim_id": claim_id,
+        "profile": CLAIM_SPAN_PROFILE,
+        "selection_status": selection_status,
+        "quote": quote,
+        "quote_sha256": hashlib.sha256(quote.encode("utf-8")).hexdigest(),
+        "relative_start_char": relative_start,
+        "relative_end_char": relative_end,
+        "start_char": absolute_start,
+        "end_char": absolute_end,
+        "text_locator_status": locator_status,
+        "mechanical_signal_counts": {
+            "significant_terms": len(contributed_tokens),
+            "exact_anchors": len(contributed_anchors),
+            "negations": len(contributed_negations),
+        },
+        "semantic_entailment_checked": False,
+    }
+
+
+def _citation_from_document_source(
+    source: Mapping[str, Any],
+    claim_spans: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
     chunk = source["payload"]
     content = str(source["content"])
     return {
@@ -444,6 +566,8 @@ def _citation_from_document_source(source: Mapping[str, Any]) -> Dict[str, Any]:
         "text_locator_status": chunk.get("text_locator_status", "unavailable"),
         "text_locator_profile": chunk.get("text_locator_profile", "legacy_unavailable:v0"),
         "support_scope": "atomic_claim_selected",
+        "claim_span_profile": CLAIM_SPAN_PROFILE,
+        "claim_spans": [dict(span) for span in claim_spans],
         "verification_status": "mechanical_checks_passed_semantic_not_evaluated",
         "source_time": chunk.get("source_time"),
         "recorded_at": chunk.get("recorded_at"),
@@ -517,6 +641,7 @@ def validate_answer_proposal(
     source_by_id = {str(source["source_id"]): source for source in evidence_pack}
     validated_claims: List[Dict[str, Any]] = []
     document_claim_ids: Dict[str, List[str]] = {}
+    document_claim_spans: Dict[str, List[Dict[str, Any]]] = {}
     document_source_order: List[str] = []
 
     for index, raw_claim in enumerate(raw_claims, start=1):
@@ -539,14 +664,20 @@ def validate_answer_proposal(
         selected_sources = [source_by_id[source_id] for source_id in source_ids]
         mechanical_validation = _validate_claim_text(claim_text, selected_sources)
         claim_id = f"C{index}"
-        source_refs = [
-            {
+        source_refs: List[Dict[str, Any]] = []
+        for source in selected_sources:
+            source_ref = {
                 "source_id": source["source_id"],
                 "source_kind": source["source_kind"],
                 "content_sha256": source["content_sha256"],
             }
-            for source in selected_sources
-        ]
+            if source["source_kind"] == "document":
+                claim_span = _claim_aligned_document_span(claim_id, claim_text, source)
+                source_ref["claim_span_sha256"] = claim_span["quote_sha256"]
+                document_claim_spans.setdefault(str(source["source_id"]), []).append(
+                    claim_span
+                )
+            source_refs.append(source_ref)
         validated_claims.append({
             "claim_id": claim_id,
             "text": claim_text.strip(),
@@ -563,7 +694,10 @@ def validate_answer_proposal(
             document_claim_ids.setdefault(source_id, []).append(claim_id)
 
     citations = [
-        _citation_from_document_source(source_by_id[source_id])
+        _citation_from_document_source(
+            source_by_id[source_id],
+            document_claim_spans[source_id],
+        )
         for source_id in document_source_order
     ]
     for citation in citations:

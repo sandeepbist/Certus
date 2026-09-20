@@ -365,6 +365,9 @@ function ChatContent() {
                           {c.claimIds && c.claimIds.length > 0 && (
                             <span className="font-mono text-[9px] text-zinc-500">{c.claimIds.join(',')}</span>
                           )}
+                          {c.claimSpans && (
+                            <span className="text-[9px] text-emerald-300/70">claim spans</span>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -576,9 +579,33 @@ function ChatContent() {
                   ✕
                 </button>
               </div>
-              <p className="max-h-48 overflow-y-auto whitespace-pre-wrap text-zinc-400 text-[11px] bg-zinc-950 p-2 rounded border border-zinc-850">
-                &quot;{activeCitation.quote}&quot;
-              </p>
+              {activeCitation.claimSpans && activeCitation.claimSpans.length > 0 ? (
+                <div className="max-h-64 space-y-2 overflow-y-auto">
+                  {activeCitation.claimSpans.map((span) => (
+                    <div key={`${span.claimId}:${span.quoteSha256}`} className="rounded border border-zinc-850 bg-zinc-950 p-2">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
+                        <span className="font-mono text-zinc-400">{span.claimId}</span>
+                        <span className={span.selectionStatus === 'claim_aligned' ? 'text-emerald-300/70' : 'text-amber-300/70'}>
+                          {span.selectionStatus === 'claim_aligned'
+                            ? 'smallest mechanically aligned sentence span'
+                            : 'full-chunk fallback'}
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap text-[11px] text-zinc-300">
+                        &quot;{span.quote}&quot;
+                      </p>
+                      <p className="mt-1 font-mono text-[9px] text-zinc-600">
+                        offsets {span.startChar ?? span.relativeStartChar}–{span.endChar ?? span.relativeEndChar}
+                        {' · '}{span.quoteSha256.slice(0, 12)}…
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="max-h-48 overflow-y-auto whitespace-pre-wrap text-zinc-400 text-[11px] bg-zinc-950 p-2 rounded border border-zinc-850">
+                  &quot;{activeCitation.quote}&quot;
+                </p>
+              )}
               <div className="space-y-0.5 text-[10px] text-zinc-500">
                 <p>{activeCitation.versionNumber
                   ? `Version ${activeCitation.versionNumber}${activeCitation.isCurrentVersion ? ' (current)' : ' (retained)'}`
@@ -596,7 +623,9 @@ function ChatContent() {
                 )}
                 <p>
                   Text locator: {activeCitation.textLocatorStatus === 'exact'
-                    ? 'Exact parsed-artifact span'
+                    ? activeCitation.claimSpans
+                      ? 'Exact claim spans within immutable parsed artifact'
+                      : 'Exact parsed-artifact chunk span'
                     : 'Unavailable for this legacy chunk'}
                 </p>
                 {activeCitation.quoteSha256 && (
