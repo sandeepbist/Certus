@@ -5,7 +5,7 @@ import threading
 from typing import Any, Dict, List, Literal
 
 from neo4j import GraphDatabase, Query
-from services.shared.safe_errors import safe_error_summary
+from services.shared.safe_errors import safe_error_summary, safe_log_value
 from services.shared.worker_runtime import bounded_int_env
 
 logger = logging.getLogger("entity_extractor")
@@ -217,7 +217,11 @@ class EntityExtractor:
                     ),
                     tenant_id=tenant_id,
                 ).consume()
-            logger.info(f"Successfully synced {len(entities)} entities to Neo4j for doc {doc_id}")
+            logger.info(
+                "Successfully synced %s entities to Neo4j for document [%s]",
+                len(entities),
+                safe_log_value(doc_id),
+            )
         except Exception as error:
             logger.warning(
                 "Neo4j sync skipped or failed (graceful degradation): %s",
@@ -255,7 +259,7 @@ class EntityExtractor:
         except Exception as error:
             logger.warning(
                 "Could not load document entities for %s: %s",
-                doc_id,
+                safe_log_value(doc_id),
                 safe_error_summary(error, operation="document entity lookup"),
             )
             return [], "degraded"
@@ -299,7 +303,7 @@ class EntityExtractor:
         except Exception as error:
             logger.warning(
                 "Document deletion graph synchronization degraded for %s: %s",
-                doc_id,
+                safe_log_value(doc_id),
                 safe_error_summary(error, operation="document graph deletion"),
             )
             return "degraded"

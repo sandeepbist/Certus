@@ -52,7 +52,7 @@ from services.shared.http_runtime import (
     development_reload_enabled,
     fastapi_documentation_options,
 )
-from services.shared.safe_errors import safe_error_summary
+from services.shared.safe_errors import safe_error_summary, safe_log_value
 from services.shared.worker_runtime import bounded_int_env, connect_database
 from services.shared.object_storage import (
     ObjectConflictError,
@@ -1726,7 +1726,7 @@ def resolve_document_evidence(
     except (EvidenceIntegrityError, LayoutEvidenceIntegrityError) as error:
         logger.error(
             "Evidence handle %s failed closed: %s",
-            chunk_id,
+            safe_log_value(chunk_id),
             safe_error_summary(error, operation="evidence verification"),
         )
         raise HTTPException(
@@ -1739,7 +1739,7 @@ def resolve_document_evidence(
     except (ObjectNotFoundError, ObjectIntegrityError) as error:
         logger.error(
             "Evidence layout object %s failed closed: %s",
-            chunk_id,
+            safe_log_value(chunk_id),
             safe_error_summary(error, operation="evidence layout verification"),
         )
         raise HTTPException(
