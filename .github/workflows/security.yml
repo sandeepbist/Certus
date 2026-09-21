@@ -89,5 +89,4 @@ jobs:
         with:
           inputs: requirements-dev.lock
           require-hashes: true
-          disable-pip: true
           no-deps: true
