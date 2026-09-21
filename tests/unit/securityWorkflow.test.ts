@@ -40,6 +40,8 @@ describe('repository security workflow', () => {
     for (const [, revision] of actionReferences) {
       expect(revision).toMatch(/^[a-f0-9]{40}$/);
     }
+    expect(workflows).not.toContain('ubuntu-latest');
+    expect(workflows.match(/runs-on: ubuntu-24\.04/g)).toHaveLength(5);
   });
 
   test('builds, inventories, and scans every application image', () => {
