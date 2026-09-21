@@ -11,6 +11,7 @@ const containerSecurityWorkflow = readFileSync(
   path.join(repositoryRoot, '.github/workflows/container-security.yml'),
   'utf8',
 );
+const grypeGate = readFileSync(path.join(repositoryRoot, '.grype-gate.yaml'), 'utf8');
 
 describe('repository security workflow', () => {
   test('analyzes every first-party source and workflow language with extended queries', () => {
@@ -57,6 +58,7 @@ describe('repository security workflow', () => {
     expect(containerSecurityWorkflow).toContain('severity-cutoff: high');
     expect(containerSecurityWorkflow).toContain('only-fixed: false');
     expect(containerSecurityWorkflow).toContain('only-fixed: true');
+    expect(containerSecurityWorkflow.match(/config: \.grype-gate\.yaml/g)).toHaveLength(1);
     expect(containerSecurityWorkflow).toContain('output-format: sarif');
     expect(containerSecurityWorkflow).toContain("github.actor != 'dependabot[bot]'");
     expect(containerSecurityWorkflow).toContain(
@@ -64,5 +66,18 @@ describe('repository security workflow', () => {
     );
     expect(containerSecurityWorkflow).toContain('retention-days: 14');
     expect(containerSecurityWorkflow).toContain('schedule:');
+  });
+
+  test('keeps the temporary Python advisory exception exact and gate-only', () => {
+    expect(grypeGate).toContain('vulnerability: CVE-2026-82049');
+    expect(grypeGate).toContain('name: python');
+    expect(grypeGate).toContain('version: 3.12.14');
+    expect(grypeGate).toContain('github.com/python/cpython/pull/157454');
+
+    const inventoryScan = containerSecurityWorkflow.slice(
+      containerSecurityWorkflow.indexOf('- name: Record all image vulnerability findings'),
+      containerSecurityWorkflow.indexOf('- name: Upload vulnerability findings'),
+    );
+    expect(inventoryScan).not.toContain('config: .grype-gate.yaml');
   });
 });
