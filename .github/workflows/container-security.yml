@@ -62,12 +62,12 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Scan the generated SBOM
-        id: scan
+      - name: Record all image vulnerability findings
+        id: inventory-scan
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           sbom: ${{ env.SBOM_PATH }}
-          fail-build: true
+          fail-build: false
           severity-cutoff: high
           only-fixed: false
           output-format: sarif
@@ -75,14 +75,23 @@ jobs:
       - name: Upload vulnerability findings
         if: >-
           always() &&
-          steps.scan.outputs.sarif != '' &&
+          steps.inventory-scan.outputs.sarif != '' &&
           github.actor != 'dependabot[bot]' &&
           (github.event_name != 'pull_request' ||
           github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
         with:
-          sarif_file: ${{ steps.scan.outputs.sarif }}
+          sarif_file: ${{ steps.inventory-scan.outputs.sarif }}
           category: grype/${{ matrix.service }}
+
+      - name: Reject fixable high or critical vulnerabilities
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: ${{ env.SBOM_PATH }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
 
       - name: Retain the machine-readable SBOM
         if: always() && steps.sbom.outcome == 'success'

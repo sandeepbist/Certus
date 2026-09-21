@@ -56,6 +56,7 @@ describe('repository security workflow', () => {
     expect(containerSecurityWorkflow).toContain('format: spdx-json');
     expect(containerSecurityWorkflow).toContain('severity-cutoff: high');
     expect(containerSecurityWorkflow).toContain('only-fixed: false');
+    expect(containerSecurityWorkflow).toContain('only-fixed: true');
     expect(containerSecurityWorkflow).toContain('output-format: sarif');
     expect(containerSecurityWorkflow).toContain("github.actor != 'dependabot[bot]'");
     expect(containerSecurityWorkflow).toContain(
