@@ -1,0 +1,17 @@
+# Temporary, exact-version exception for the blocking "fixable" image gate.
+#
+# CVE-2026-82049 affects tarfile extraction through crafted hardlink/symlink
+# targets. CPython's 3.12 backport is still open upstream, so no stable 3.12
+# release contains the fix; Grype currently reports the incompatible 3.14.0b1
+# line as the available fix for Python 3.12.14. Certus has no first-party tar
+# or archive extraction path. The unfiltered inventory scan intentionally does
+# not load this file, so the advisory remains visible in uploaded SARIF.
+#
+# Pinning both package name and version makes a future Python base-image update
+# invalidate this exception instead of silently carrying it forward.
+# Upstream backport: https://github.com/python/cpython/pull/157454
+ignore:
+  - vulnerability: CVE-2026-82049
+    package:
+      name: python
+      version: 3.12.14
