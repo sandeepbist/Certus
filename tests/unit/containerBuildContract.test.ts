@@ -36,7 +36,9 @@ describe('container build contracts', () => {
     for (const service of ['gateway', 'web']) {
       const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
 
-      expect(dockerfile).toContain('oven/bun:1.4.0-alpine');
+      expect(dockerfile).toContain(
+        'oven/bun:1.4.2-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f',
+      );
       expect(dockerfile).toContain('COPY package.json bun.lock bunfig.toml ./');
       expect(dockerfile).toContain('bun install --frozen-lockfile');
       expect(dockerfile).not.toContain('||');
