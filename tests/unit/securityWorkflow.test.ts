@@ -27,8 +27,8 @@ describe('repository security workflow', () => {
     expect(securityWorkflow).toContain('fail-on-severity: moderate');
     expect(securityWorkflow).toContain('inputs: requirements-dev.lock');
     expect(securityWorkflow).toContain('require-hashes: true');
-    expect(securityWorkflow).toContain('disable-pip: true');
     expect(securityWorkflow).toContain('no-deps: true');
+    expect(securityWorkflow).not.toContain('disable-pip:');
 
     const workflowDirectory = path.join(repositoryRoot, '.github/workflows');
     const workflows = readdirSync(workflowDirectory)
@@ -40,6 +40,8 @@ describe('repository security workflow', () => {
     for (const [, revision] of actionReferences) {
       expect(revision).toMatch(/^[a-f0-9]{40}$/);
     }
+    expect(workflows).not.toContain('ubuntu-latest');
+    expect(workflows.match(/runs-on: ubuntu-24\.04/g)).toHaveLength(5);
   });
 
   test('builds, inventories, and scans every application image', () => {
