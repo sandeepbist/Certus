@@ -1,6 +1,6 @@
 import unittest
 
-from services.shared.safe_errors import safe_error_summary
+from services.shared.safe_errors import safe_error_summary, safe_log_value
 
 
 class SafeErrorSummaryTests(unittest.TestCase):
@@ -28,6 +28,17 @@ class SafeErrorSummaryTests(unittest.TestCase):
         )
 
         self.assertEqual(summary, "worker_operation_token failed (ValueError)")
+
+    def test_log_values_are_single_line_bounded_and_keep_field_boundaries(self):
+        malicious = "document-a\r\n2026-09-21 [INFO] forged\x00tail" + ("x" * 200)
+
+        value = safe_log_value(malicious)
+
+        self.assertEqual(len(value), 160)
+        self.assertNotIn("\r", value)
+        self.assertNotIn("\n", value)
+        self.assertNotIn("\x00", value)
+        self.assertIn("document-a_2026-09-21 [INFO] forged_tail", value)
 
 
 if __name__ == "__main__":

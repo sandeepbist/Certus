@@ -2,6 +2,18 @@ import re
 
 
 _SAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9_. -]+")
+_LOG_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def safe_log_value(value: object) -> str:
+    """Return a bounded, single-line representation for an untrusted log field."""
+
+    # Explicit newline replacement is kept in addition to the full control
+    # character pass so the log-forging boundary remains obvious to humans and
+    # static analysis. Replace rather than remove separators to avoid joining
+    # attacker-controlled fragments into a misleading value.
+    text = str(value).replace("\r\n", "_").replace("\n", "_").replace("\r", "_")
+    return _LOG_CONTROL_RE.sub("_", text)[:160]
 
 
 def safe_error_summary(error: BaseException, *, operation: str) -> str:
