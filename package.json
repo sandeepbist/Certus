@@ -34,10 +34,14 @@
   },
   "author": "Certus contributors",
   "license": "MIT",
+  "overrides": {
+    "postcss": "8.5.26",
+    "sharp": "0.35.4"
+  },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.6",
     "eslint": "9.39.5",
-    "eslint-config-next": "15.5.23",
+    "eslint-config-next": "15.5.24",
     "typescript-eslint": "8.67.0"
   }
 }

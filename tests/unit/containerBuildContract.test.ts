@@ -36,12 +36,36 @@ describe('container build contracts', () => {
     for (const service of ['gateway', 'web']) {
       const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
 
-      expect(dockerfile).toContain('oven/bun:1.4.0-alpine');
+      expect(dockerfile).toContain(
+        'oven/bun:1.4.2-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f',
+      );
       expect(dockerfile).toContain('COPY package.json bun.lock bunfig.toml ./');
       expect(dockerfile).toContain('bun install --frozen-lockfile');
       expect(dockerfile).not.toContain('||');
+      expect(dockerfile).toContain(
+        'FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS runner',
+      );
+      expect(dockerfile).toContain(
+        'COPY --from=dependencies /usr/local/bin/bun /usr/local/bin/bun',
+      );
       expect(dockerfile).toContain('USER certus');
     }
+  });
+
+  test('the Web runtime resolves the patched framework and build dependencies', () => {
+    const rootPackage = readRepositoryFile('package.json');
+    const webPackage = readRepositoryFile('services/web/package.json');
+    const lock = readRepositoryFile('bun.lock');
+
+    expect(webPackage).toContain('"next": "15.5.24"');
+    expect(rootPackage).toContain('"postcss": "8.5.26"');
+    expect(rootPackage).toContain('"sharp": "0.35.4"');
+    expect(lock).toContain('"next@15.5.24"');
+    expect(lock).toContain('"postcss@8.5.26"');
+    expect(lock).toContain('"sharp@0.35.4"');
+    expect(lock).not.toContain('"next@15.5.23"');
+    expect(lock).not.toContain('"postcss@8.4.31"');
+    expect(lock).not.toContain('"sharp@0.34.5"');
   });
 
   test('every external container image is pinned by tag and immutable digest', () => {

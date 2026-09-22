@@ -83,7 +83,7 @@ export function handleWebSocketConnection(socket: WebSocket, request: FastifyReq
       return;
     }
 
-    const rateLimit = await request.server.checkRequestRate(tenantId);
+    const rateLimit = await request.server.checkRequestRate(request);
     if (!rateLimit.available) {
       sendJson({
         type: 'error',

@@ -1,42 +1,143 @@
-import { FastifyPluginAsync } from 'fastify';
+import rateLimit, { normalizeIP } from '@fastify/rate-limit';
+import { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
-import { FixedWindowRateLimiter } from '../utils/fixedWindowRateLimiter.js';
-import type { RateLimitResult } from '../utils/fixedWindowRateLimiter.js';
+import { Redis } from 'ioredis';
+import { createHash } from 'node:crypto';
+
+type RateLimitResult = {
+  allowed: boolean;
+  available: boolean;
+  remaining: number;
+  reset: number;
+};
 
 declare module 'fastify' {
   interface FastifyInstance {
-    checkRequestRate(tenantId: string): Promise<RateLimitResult>;
+    checkRequestRate(request: FastifyRequest): Promise<RateLimitResult>;
     checkRateLimitStorage(): Promise<boolean>;
   }
 }
 
+const healthPaths = new Set(['/health', '/health/ready']);
+
+function tenantRateLimitKey(request: FastifyRequest): string {
+  if (!request.user?.tenantId) return `anonymous:${normalizeIP(request.ip)}`;
+  const tenantDigest = createHash('sha256').update(request.user.tenantId).digest('hex');
+  return `tenant:${tenantDigest}`;
+}
+
+function boundedRateLimit(name: string, fallback: number): number {
+  const configured = Number(process.env[name] || fallback);
+  if (!Number.isSafeInteger(configured) || configured < 1 || configured > 100_000) {
+    throw new Error(`${name} must be an integer between 1 and 100000.`);
+  }
+  return configured;
+}
+
 const rateLimiterPlugin: FastifyPluginAsync = async (fastify) => {
-  const requestsPerMinute = Number(process.env.RATE_LIMIT_REQUESTS_PER_MINUTE || 100);
-  if (!Number.isSafeInteger(requestsPerMinute) || requestsPerMinute < 1 || requestsPerMinute > 100_000) {
-    throw new Error('RATE_LIMIT_REQUESTS_PER_MINUTE must be an integer between 1 and 100000.');
+  const tenantRequestsPerMinute = boundedRateLimit('RATE_LIMIT_REQUESTS_PER_MINUTE', 100);
+  const edgeRequestsPerMinute = boundedRateLimit('RATE_LIMIT_IP_REQUESTS_PER_MINUTE', 300);
+  const redisRequired = process.env.NODE_ENV === 'production';
+  const redisUrl = process.env.REDIS_URL?.trim();
+  if (redisRequired && !redisUrl) {
+    throw new Error('REDIS_URL is required for production rate limiting.');
   }
 
-  const limiter = new FixedWindowRateLimiter(process.env.REDIS_URL, {
-    redisRequired: process.env.NODE_ENV === 'production',
+  let redis: Redis | null = null;
+  if (redisUrl) {
+    const candidate = new Redis(redisUrl, {
+      connectTimeout: 5_000,
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+      lazyConnect: true,
+    });
+    candidate.on('error', () => {
+      // Readiness and request checks expose storage outages without logging
+      // connection details that may contain credentials.
+    });
+    try {
+      await candidate.connect();
+      await candidate.ping();
+      redis = candidate;
+    } catch (error) {
+      candidate.disconnect(false);
+      if (redisRequired) throw error;
+      fastify.log.warn('Shared rate-limit storage unavailable; using bounded local storage');
+    }
+  }
+
+  await fastify.register(rateLimit, {
+    global: true,
+    hook: 'onRequest',
+    max: edgeRequestsPerMinute,
+    timeWindow: 60_000,
+    cache: 10_000,
+    redis: redis || undefined,
+    nameSpace: 'certus-rate-limit:',
+    skipOnError: false,
+    allowList: (request) => healthPaths.has(request.url.split('?', 1)[0]),
+    errorResponseBuilder: (_request, context) => ({
+      statusCode: context.statusCode,
+      error: 'Too Many Requests',
+      message: 'Rate limit exceeded. Please slow down.',
+      retryAfter: Math.max(1, Math.ceil(context.ttl / 1_000)),
+    }),
   });
-  await limiter.start();
-  fastify.decorate(
-    'checkRequestRate',
-    (tenantId: string) => limiter.checkRequestRate(tenantId, requestsPerMinute),
-  );
-  fastify.decorate('checkRateLimitStorage', () => limiter.isReady());
-  fastify.addHook('onClose', async () => limiter.stop());
+
+  const checkTenantRate = fastify.createRateLimit({
+    max: tenantRequestsPerMinute,
+    timeWindow: 60_000,
+    keyGenerator: tenantRateLimitKey,
+  });
+
+  fastify.decorate('checkRequestRate', async (request: FastifyRequest) => {
+    try {
+      const result = await checkTenantRate(request);
+      const now = Math.floor(Date.now() / 1_000);
+      if (result.isAllowed) {
+        return {
+          allowed: true,
+          available: true,
+          remaining: tenantRequestsPerMinute,
+          reset: now + 60,
+        };
+      }
+      return {
+        allowed: !result.isExceeded,
+        available: true,
+        remaining: result.remaining,
+        reset: now + result.ttlInSeconds,
+      };
+    } catch {
+      request.log.error('Shared rate-limit storage is unavailable');
+      return {
+        allowed: false,
+        available: false,
+        remaining: 0,
+        reset: Math.floor(Date.now() / 1_000) + 1,
+      };
+    }
+  });
+  fastify.decorate('checkRateLimitStorage', async () => {
+    if (!redis) return !redisRequired;
+    try {
+      return await redis.ping() === 'PONG';
+    } catch {
+      return false;
+    }
+  });
+  fastify.addHook('onClose', async () => {
+    redis?.disconnect(false);
+    redis = null;
+  });
 
   fastify.addHook('preHandler', async (request, reply) => {
-    // Skip health checks
-    if (request.url.startsWith('/health')) {
-      return;
-    }
+    const requestPath = request.url.split('?', 1)[0];
+    if (healthPaths.has(requestPath)) return;
 
-    const tenantId = request.user?.tenantId || 'anonymous';
-    const { allowed, available, remaining, reset } = await fastify.checkRequestRate(tenantId);
+    const { allowed, available, remaining, reset } = await fastify.checkRequestRate(request);
 
-    reply.header('X-RateLimit-Limit', requestsPerMinute);
+    reply.header('X-RateLimit-Limit', tenantRequestsPerMinute);
     reply.header('X-RateLimit-Remaining', remaining);
     reply.header('X-RateLimit-Reset', reset);
 
@@ -52,7 +153,6 @@ const rateLimiterPlugin: FastifyPluginAsync = async (fastify) => {
     if (request.user?.userId) {
       reply.header('X-TokenBudget-Remaining', request.user.tokenBudget);
 
-      const requestPath = request.url.split('?', 1)[0];
       if (
         request.user.tokenBudget <= 0
         && (requestPath === '/api/chat/query' || requestPath === '/ws/chat')
