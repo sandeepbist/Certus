@@ -359,4 +359,93 @@ SQL
   printf "SELECT pg_advisory_unlock(hashtextextended('certus:schema-migrations:v1', 0));\n"
 } | run_psql -q
 
+# Prove that the configured runtime password actually authenticates. Requiring
+# a password method prevents local HBA `trust` rules from making a stale
+# runtime password look healthy. PostgreSQL 16+ libpq is needed for
+# `require_auth`; use the configured database image as a client when the host
+# client is missing or too old.
+runtime_smoke_passfile="$(mktemp "${TMPDIR:-/tmp}/certus-runtime-pgpass.XXXXXX")"
+chmod 600 "$runtime_smoke_passfile"
+trap 'rm -f -- "$runtime_smoke_passfile"' EXIT
+runtime_smoke_url="$(python3 - "$runtime_smoke_passfile" <<'PY'
+import os
+import sys
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
+
+passfile = sys.argv[1]
+url = urlsplit(os.environ["DATABASE_URL"])
+host = url.hostname
+port = int(os.environ["DB_PORT"])
+database = unquote(url.path[1:])
+user = unquote(url.username or "")
+password = unquote(url.password or "")
+if any("\n" in value or "\r" in value for value in (host, database, user, password)):
+    raise SystemExit("Runtime DATABASE_URL fields cannot contain newlines for the password-file check.")
+
+def pgpass_escape(value):
+    return value.replace("\\", "\\\\").replace(":", "\\:")
+
+with open(passfile, "w", encoding="utf-8") as stream:
+    stream.write(":".join(pgpass_escape(value) for value in (
+        host, str(port), database, user, password
+    )) + "\n")
+
+os.chmod(passfile, 0o600)
+
+# Preserve non-credential connection options but remove overridable auth
+# settings. The runtime password never appears in the psql argument.
+query = [
+    (key, value)
+    for key, value in parse_qsl(url.query, keep_blank_values=True)
+    if key.lower() not in {"require_auth", "password", "passfile"}
+]
+query.append(("require_auth", "password,md5,scram-sha-256"))
+url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+netloc = f"{quote(user, safe='')}@{url_host}:{port}"
+path = "/" + quote(database, safe="")
+print(urlunsplit((url.scheme, netloc, path, urlencode(query), "")))
+PY
+)"
+
+runtime_smoke_client=""
+if command -v psql &>/dev/null; then
+  local_psql_major="$(psql --version 2>/dev/null | sed -nE 's/.*\(PostgreSQL\) ([0-9]+)\..*/\1/p')"
+  if [[ "$local_psql_major" =~ ^[0-9]+$ ]] && (( local_psql_major >= 16 )); then
+    runtime_smoke_client="local"
+  fi
+fi
+
+if [[ "$runtime_smoke_client" == "local" ]]; then
+  if ! runtime_smoke_role="$(env -u PGPASSWORD PGPASSFILE="$runtime_smoke_passfile" \
+    psql -X -w -v ON_ERROR_STOP=1 -Atq -d "$runtime_smoke_url" \
+      -c 'SELECT current_user' 2>/dev/null)"; then
+    echo "❌ Runtime database password authentication failed for the configured DATABASE_URL."
+    exit 1
+  fi
+elif command -v docker &>/dev/null \
+  && docker ps -q -f name="$PG_DOCKER_CONTAINER" | grep -q .; then
+  runtime_smoke_image="$(docker inspect --format '{{.Config.Image}}' "$PG_DOCKER_CONTAINER" 2>/dev/null || true)"
+  if [[ -z "$runtime_smoke_image" ]] || ! runtime_smoke_role="$(docker run --rm \
+    --network host \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=1m \
+    --user "$(id -u):$(id -g)" \
+    --mount "type=bind,src=$runtime_smoke_passfile,dst=/run/certus-runtime.pgpass,readonly" \
+    --env PGPASSFILE=/run/certus-runtime.pgpass \
+    --entrypoint psql "$runtime_smoke_image" \
+      -X -w -v ON_ERROR_STOP=1 -Atq -d "$runtime_smoke_url" \
+      -c 'SELECT current_user' 2>/dev/null)"; then
+    echo "❌ Runtime database password authentication failed for the configured DATABASE_URL."
+    exit 1
+  fi
+else
+  echo "❌ A PostgreSQL 16+ client is required to verify runtime password authentication."
+  exit 1
+fi
+
+if [[ "$runtime_smoke_role" != "$runtime_database_user" ]]; then
+  echo "❌ Runtime database login returned an unexpected role for the configured DATABASE_URL."
+  exit 1
+fi
+
 echo "✅ All database migrations applied successfully!"
