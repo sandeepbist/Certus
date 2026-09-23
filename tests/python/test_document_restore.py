@@ -202,6 +202,71 @@ class DocumentRestoreTests(unittest.TestCase):
         self.assertEqual(store.rollbacks, 1)
 
 
+class ArchivedDocumentListTests(unittest.TestCase):
+    def test_deleted_status_lists_only_owned_documents(self):
+        class Connection:
+            def __init__(self):
+                self.statement = ""
+                self.params = ()
+                self.rows = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def cursor(self, **_kwargs):
+                return self
+
+            def execute(self, query, params=None):
+                self.statement = " ".join(query.split())
+                self.params = params or ()
+                self.rows = []
+                if tuple(self.params[:2]) == ("tenant-a", "user-a"):
+                    self.rows = [{
+                        "id": UUID(DOCUMENT_ID),
+                        "title": "Archived proof",
+                        "status": "deleted",
+                    }]
+
+            def fetchall(self):
+                return self.rows
+
+            def fetchone(self):
+                return None
+
+        connection = Connection()
+        with patch.object(ingestion_main, "get_db", return_value=connection):
+            owned = ingestion_main.list_documents(
+                tenant_id="tenant-a",
+                user_id="user-a",
+                limit=50,
+                page_cursor=None,
+                search="",
+                status="deleted",
+                tag="",
+                source_type="",
+            )
+            unowned = ingestion_main.list_documents(
+                tenant_id="tenant-other",
+                user_id="user-other",
+                limit=50,
+                page_cursor=None,
+                search="",
+                status="deleted",
+                tag="",
+                source_type="",
+            )
+
+        self.assertEqual([item["title"] for item in owned["documents"]], ["Archived proof"])
+        self.assertEqual(unowned["documents"], [])
+        self.assertIn("document.tenant_id = %s", connection.statement)
+        self.assertIn("document.user_id = %s", connection.statement)
+        self.assertIn("document.deleted_at IS NOT NULL", connection.statement)
+        self.assertEqual(tuple(connection.params[:2]), ("tenant-other", "user-other"))
+
+
 class GraphRestoreTests(unittest.TestCase):
     def run_restore(self, record):
         class Result:

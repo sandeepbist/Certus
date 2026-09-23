@@ -1348,14 +1348,14 @@ def list_documents(
     limit: int = Query(50, ge=1, le=100),
     page_cursor: Optional[uuid.UUID] = Query(None, alias="cursor"),
     search: str = Query("", max_length=500),
-    status: Optional[Literal["processing", "ready", "error"]] = Query(None),
+    status: Optional[Literal["processing", "ready", "error", "deleted"]] = Query(None),
     tag: str = Query("", max_length=64),
     source_type: str = Query("", max_length=50),
 ):
     filters = [
         "document.tenant_id = %s",
         "document.user_id = %s",
-        "document.deleted_at IS NULL",
+        "document.deleted_at IS NOT NULL" if status == "deleted" else "document.deleted_at IS NULL",
     ]
     values: List[Any] = [tenant_id, user_id]
     clean_search = search.strip()
