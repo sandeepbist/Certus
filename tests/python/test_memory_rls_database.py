@@ -66,7 +66,7 @@ class MemoryRlsDatabaseTests(unittest.TestCase):
                 self.assertFalse(owns_memories)
                 self.assertTrue(rls_enabled)
 
-                # Unset context denies writes. Empty context later denies every command.
+                # Unset context denies writes. Empty context later denies all commands.
                 cursor.execute("SELECT id FROM memories LIMIT 1")
                 self.assertIsNone(cursor.fetchone())
                 self._assert_rejected(
@@ -148,6 +148,14 @@ class MemoryRlsDatabaseTests(unittest.TestCase):
                 )
 
                 self._set_scope(cursor, "", "")
+                self._assert_rejected(
+                    cursor,
+                    errors.InsufficientPrivilege,
+                    "INSERT INTO memories "
+                    "(tenant_id, user_id, fact, embedding_profile) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (tenant_a, user_a, f"{marker}:empty-context", EMBEDDING_PROFILE),
+                )
                 cursor.execute(
                     "SELECT id FROM memories WHERE id = ANY(%s::uuid[])",
                     ([memory_a, memory_b],),
