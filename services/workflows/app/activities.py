@@ -20,7 +20,11 @@ REPO_ROOT = next(
 sys.path.insert(0, str(REPO_ROOT))
 
 from services.shared.automation import condition_matches, extract_summary
-from services.shared.worker_runtime import bounded_int_env, connect_database
+from services.shared.worker_runtime import (
+    bounded_int_env,
+    configured_database_url,
+    connect_database,
+)
 from services.shared.webhooks import (
     UnsafeWebhookTarget,
     WebhookConfigurationError,
@@ -34,7 +38,7 @@ from services.shared.safe_errors import safe_error_summary
 load_dotenv(REPO_ROOT / ".env")
 
 logger = logging.getLogger("certus_workflow_activities")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nexus:nexus_dev_password@localhost:5432/nexus")
+DATABASE_URL = configured_database_url()
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "nexus_neo4j_dev")

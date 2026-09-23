@@ -39,6 +39,7 @@ from services.shared.worker_runtime import (
     WorkerIdentity,
     bounded_int_env,
     bounded_retention_days_env,
+    configured_database_url,
     connect_database,
     redis_connection_options,
     write_worker_heartbeat,
@@ -50,7 +51,7 @@ load_dotenv(REPO_ROOT / ".env")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("embedding_worker")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nexus:nexus_dev_password@localhost:5432/nexus")
+DATABASE_URL = configured_database_url()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")

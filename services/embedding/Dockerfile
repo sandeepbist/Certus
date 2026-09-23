@@ -14,7 +14,8 @@ RUN groupadd --gid 10001 certus \
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    NODE_ENV=production
 
 USER certus
 CMD ["python", "app/worker.py"]

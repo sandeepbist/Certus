@@ -13,8 +13,24 @@ from typing import Any, Mapping
 
 import psycopg2
 
+from services.shared.http_runtime import hardened_runtime_enabled
+
 
 WORKER_STATUSES = frozenset({"starting", "running", "draining", "stopped"})
+DEVELOPMENT_DATABASE_URL = "postgresql://nexus:nexus_dev_password@localhost:5432/nexus"
+
+
+def configured_database_url(
+    database_url: str | None = None,
+    environment: str | None = None,
+) -> str:
+    if database_url is None:
+        database_url = os.getenv("DATABASE_URL")
+    if database_url and database_url.strip():
+        return database_url.strip()
+    if not hardened_runtime_enabled(environment):
+        return DEVELOPMENT_DATABASE_URL
+    raise RuntimeError("DATABASE_URL is required outside development and test")
 
 
 def bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:

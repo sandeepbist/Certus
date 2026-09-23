@@ -15,6 +15,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from services.shared.worker_runtime import (
     bounded_int_env,
     bounded_retention_days_env,
+    configured_database_url,
     connect_database,
     redis_connection_options,
 )
@@ -22,7 +23,7 @@ from services.shared.safe_errors import safe_error_summary
 
 
 logger = logging.getLogger("certus_automation_dispatcher")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nexus:nexus_dev_password@localhost:5432/nexus")
+DATABASE_URL = configured_database_url()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "certus-workflows")
 STREAM_KEY = "automation:events"

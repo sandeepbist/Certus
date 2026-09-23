@@ -1,16 +1,13 @@
 import os
 from dotenv import load_dotenv
 
-from services.shared.worker_runtime import bounded_int_env
+from services.shared.worker_runtime import bounded_int_env, configured_database_url
 
 load_dotenv()
 
 
 class Settings:
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL",
-        "postgresql://nexus:nexus_dev_password@localhost:5432/nexus",
-    )
+    DATABASE_URL: str = configured_database_url()
     NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
     NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "nexus_neo4j_dev")

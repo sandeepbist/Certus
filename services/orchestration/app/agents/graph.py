@@ -31,6 +31,7 @@ from app.replay import ChatReplayUnavailable, reconstruct_frozen_evidence
 from app.query_planning import build_query_plan, validate_query_plan
 from app.pricing import estimate_openai_text_generation_cost
 from services.shared.safe_errors import safe_error_summary
+from services.shared.worker_runtime import configured_database_url
 from app.grounding import (
     ANSWER_PROPOSAL_SCHEMA,
     GENERATION_MAX_OUTPUT_TOKENS,
@@ -48,7 +49,7 @@ from app.grounding import (
 
 logger = logging.getLogger("orchestration_langgraph")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nexus:nexus_dev_password@localhost:5432/nexus")
+DATABASE_URL = configured_database_url()
 MCP_TOOLS_URL = os.getenv("MCP_TOOLS_URL", "http://localhost:8003")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", f"{MCP_TOOLS_URL.rstrip('/')}/mcp")
 INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
