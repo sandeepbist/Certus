@@ -296,6 +296,8 @@ function DocumentsContent() {
                       ? 'Documents are unavailable until the service recovers.'
                       : searchQuery.trim() || selectedFormat !== 'all'
                         ? 'No documents match the current filters.'
+                        : showDeleted
+                          ? 'No archived documents.'
                         : 'No documents yet. Upload a file to build your knowledge base.'}
                   </td>
                 </tr>
