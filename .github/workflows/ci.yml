@@ -17,6 +17,21 @@ jobs:
     name: Lint, types, tests, and retrieval gate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+        env:
+          POSTGRES_USER: certus_ci
+          POSTGRES_PASSWORD: certus-ci-migration-password
+          POSTGRES_DB: certus_ci
+        ports:
+          - '5432'
+        options: >-
+          --health-cmd "pg_isready -U certus_ci -d certus_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 5s
 
     steps:
       - name: Check out repository
@@ -53,5 +68,27 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --require-hashes -r requirements-dev.lock
 
+      - name: Apply migrations twice and verify idempotence
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: ${{ job.services.postgres.ports['5432'] }}
+          POSTGRES_USER: certus_ci
+          POSTGRES_PASSWORD: certus-ci-migration-password
+          POSTGRES_DB: certus_ci
+          CERTUS_RUNTIME_DB_USER: certus_runtime
+          CERTUS_RUNTIME_DB_PASSWORD: certus-ci-runtime-password
+          DATABASE_URL: postgresql://certus_runtime:certus-ci-runtime-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
+          PG_DOCKER_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          PG_DOCKER_CONTAINER="$(docker inspect --format '{{.Name}}' "$PG_DOCKER_CONTAINER")"
+          PG_DOCKER_CONTAINER="${PG_DOCKER_CONTAINER#/}"
+          export PG_DOCKER_CONTAINER
+          bash scripts/migrate-db.sh
+          bash scripts/migrate-db.sh
+
       - name: Run repository gate
+        env:
+          CERTUS_TEST_DATABASE_URL: postgresql://certus_runtime:certus-ci-runtime-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
+          CERTUS_TEST_OWNER_DATABASE_URL: postgresql://certus_ci:certus-ci-migration-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
         run: bun run check
