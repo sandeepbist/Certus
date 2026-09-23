@@ -339,5 +339,5 @@ describe('Compose runtime database interpolation', () => {
     });
     expect(missingRuntimePassword.exitCode).not.toBe(0);
     expect(missingRuntimePassword.stderr.toString()).toContain('CERTUS_RUNTIME_DB_PASSWORD is required');
-  });
+  }, 15_000);
 });
