@@ -156,6 +156,8 @@ Managed database setup is separate from `make setup`, which starts local Compose
 
 The migration identity needs target database and schema DDL rights, and authority to create or manage the runtime role. Migrations install `uuid-ossp`, `vector`, `pg_trgm`, and `pgcrypto`. Managed providers may reserve role or extension operations; have a DBA or infrastructure automation pre-provision those roles, install extensions, and grant migration rights where needed. Then run `scripts/migrate-db.sh` as a controlled release step with `DB_HOST`, `DB_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` set to the managed target and migration identity. Set `CERTUS_RUNTIME_DB_USER` and a nonempty `CERTUS_RUNTIME_DB_PASSWORD`; set `DATABASE_URL` to that runtime role and the same host, port, and database. The migration step provisions runtime grants. Give application processes only `DATABASE_URL`; keep migration credentials in the release environment.
 
+The release step verifies a real password login and needs a PostgreSQL 16+ client. It can use the configured local database image when no suitable host `psql` is available, but that fallback does not mount custom CA or client-certificate files. Managed targets using those files should provide a configured host client; a missing file or mismatched runtime password stops the release.
+
 ## Development
 
 ### Common commands
