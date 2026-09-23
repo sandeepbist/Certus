@@ -14,14 +14,12 @@ from psycopg2.extras import RealDictCursor
 from temporalio.client import Client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from services.shared.safe_errors import safe_error_summary
+from services.shared.worker_runtime import configured_database_url
 
 
 logger = logging.getLogger("certus_tool_service")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://nexus:nexus_dev_password@localhost:5432/nexus",
-)
+DATABASE_URL = configured_database_url()
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "nexus_neo4j_dev")

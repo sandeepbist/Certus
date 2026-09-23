@@ -7,6 +7,7 @@ from services.shared.worker_runtime import (
     WorkerIdentity,
     bounded_int_env,
     bounded_retention_days_env,
+    configured_database_url,
     connect_database,
     redis_connection_options,
     write_worker_heartbeat,
@@ -14,6 +15,40 @@ from services.shared.worker_runtime import (
 
 
 class WorkerRuntimeTests(unittest.TestCase):
+    def test_database_url_requires_configuration_in_hardened_runtimes(self):
+        with patch.dict(
+            os.environ,
+            {
+                "NODE_ENV": "production",
+                "DATABASE_URL": "postgresql://db.example/nexus",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                configured_database_url(),
+                "postgresql://db.example/nexus",
+            )
+
+        with patch.dict(os.environ, {"NODE_ENV": "test"}, clear=True):
+            self.assertEqual(
+                configured_database_url(),
+                "postgresql://nexus:nexus_dev_password@localhost:5432/nexus",
+            )
+
+        for database_url in (None, "", "   "):
+            environment = {"NODE_ENV": "production"}
+            if database_url is not None:
+                environment["DATABASE_URL"] = database_url
+            with self.subTest(database_url=database_url), patch.dict(
+                os.environ,
+                environment,
+                clear=True,
+            ), self.assertRaisesRegex(
+                RuntimeError,
+                "DATABASE_URL is required outside development and test",
+            ):
+                configured_database_url()
+
     def test_database_connection_has_identity_and_server_enforced_budgets(self):
         with patch("services.shared.worker_runtime.psycopg2.connect") as connect:
             connect_database(

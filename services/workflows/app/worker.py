@@ -31,6 +31,7 @@ from app.workflows import AutomationWorkflow, ReminderWorkflow, WebhookEventWork
 from services.shared.worker_runtime import (
     WorkerIdentity,
     bounded_int_env,
+    configured_database_url,
     connect_database,
     write_worker_heartbeat,
 )
@@ -50,10 +51,7 @@ logger = logging.getLogger("certus_temporal_worker")
 TEMPORAL_ADDRESS = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
 TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "nexus")
 TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "certus-workflows")
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://nexus:nexus_dev_password@localhost:5432/nexus",
-)
+DATABASE_URL = configured_database_url()
 DATABASE_CONNECT_TIMEOUT_SECONDS = bounded_int_env(
     "WORKFLOWS_DB_CONNECT_TIMEOUT_SECONDS", 3, 1, 30
 )

@@ -53,7 +53,11 @@ from services.shared.http_runtime import (
     fastapi_documentation_options,
 )
 from services.shared.safe_errors import safe_error_summary, safe_log_value
-from services.shared.worker_runtime import bounded_int_env, connect_database
+from services.shared.worker_runtime import (
+    bounded_int_env,
+    configured_database_url,
+    connect_database,
+)
 from services.shared.object_storage import (
     ObjectConflictError,
     ObjectDigest,
@@ -142,7 +146,7 @@ app = FastAPI(
     **fastapi_documentation_options(),
 )
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://nexus:nexus_dev_password@localhost:5432/nexus")
+DATABASE_URL = configured_database_url()
 DATABASE_CONNECT_TIMEOUT_SECONDS = bounded_int_env(
     "INGESTION_DB_CONNECT_TIMEOUT_SECONDS", 3, 1, 30
 )
