@@ -8,12 +8,14 @@ Run after migrations on a disposable database:
 
 import os
 import unittest
+from pathlib import Path
 from uuid import uuid4
 
 import psycopg2
 from psycopg2 import errors
 
 EMBEDDING_PROFILE = "embedding-space:v1:local:local-lexical-v2:1536"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class MemoryRlsDatabaseTests(unittest.TestCase):
@@ -266,6 +268,63 @@ class MemoryRlsDatabaseTests(unittest.TestCase):
                     (memory_ids[0],),
                 )
                 self.assertEqual(cursor.rowcount, 1)
+            connection.rollback()
+        finally:
+            connection.close()
+
+    @unittest.skipUnless(
+        os.getenv("CERTUS_TEST_OWNER_DATABASE_URL"),
+        "set CERTUS_TEST_OWNER_DATABASE_URL to test legacy-data migration failure",
+    )
+    def test_cross_scope_legacy_references_abort_without_row_changes(self):
+        connection = psycopg2.connect(os.environ["CERTUS_TEST_OWNER_DATABASE_URL"])
+        run_id, target_memory_id, source_memory_id = (str(uuid4()) for _ in range(3))
+        tenant_a, user_a, tenant_b, user_b = "legacy-a", "user-a", "legacy-b", "user-b"
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CREATE TEMP TABLE agent_runs "
+                    "(id uuid PRIMARY KEY, tenant_id text NOT NULL, user_id text NOT NULL)"
+                )
+                cursor.execute(
+                    "CREATE TEMP TABLE memories ("
+                    "id uuid PRIMARY KEY, tenant_id text NOT NULL, user_id text NOT NULL, "
+                    "source_run_id uuid REFERENCES agent_runs(id), "
+                    "superseded_by uuid REFERENCES memories(id))"
+                )
+                cursor.execute(
+                    "INSERT INTO agent_runs VALUES (%s, %s, %s)",
+                    (run_id, tenant_a, user_a),
+                )
+                cursor.execute(
+                    "INSERT INTO memories VALUES (%s, %s, %s, NULL, NULL)",
+                    (target_memory_id, tenant_a, user_a),
+                )
+                cursor.execute(
+                    "INSERT INTO memories VALUES (%s, %s, %s, %s, %s)",
+                    (source_memory_id, tenant_b, user_b, run_id, target_memory_id),
+                )
+                preflight_sql = (
+                    (REPOSITORY_ROOT / "infra/db/migrations/070_memory_row_security.sql")
+                    .read_text(encoding="utf-8")
+                    .split("\nALTER TABLE agent_runs", 1)[0]
+                )
+                cursor.execute("SAVEPOINT before_legacy_preflight")
+                with self.assertRaisesRegex(
+                    errors.RaiseException,
+                    "Cannot install memory scope constraints",
+                ) as raised:
+                    cursor.execute(preflight_sql)
+                self.assertIn("1 cross-scope source_run_id", str(raised.exception))
+                self.assertIn("1 cross-scope superseded_by", str(raised.exception))
+                cursor.execute("ROLLBACK TO SAVEPOINT before_legacy_preflight")
+                cursor.execute(
+                    "SELECT source_run_id::text, superseded_by::text "
+                    "FROM memories WHERE id = %s",
+                    (source_memory_id,),
+                )
+                self.assertEqual(cursor.fetchone(), (run_id, target_memory_id))
             connection.rollback()
         finally:
             connection.close()
