@@ -2195,6 +2195,163 @@ def delete_document(
         "graph_sync": graph_sync,
     }
 
+
+@app.post("/documents/{document_id}/restore")
+def restore_document(
+    document_id: str,
+    tenant_id: str = Header(..., alias="X-Certus-Tenant-Id"),
+    user_id: str = Header(..., alias="X-Certus-User-Id"),
+):
+    try:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM document_embedding_jobs
+                    WHERE document_id = %s
+                      AND tenant_id = %s AND user_id = %s
+                    ORDER BY id
+                    FOR UPDATE
+                    """,
+                    (document_id, tenant_id, user_id),
+                )
+                cursor.fetchall()
+                cursor.execute(
+                    """
+                    SELECT document.id, document.entity_count
+                    FROM documents AS document
+                    JOIN document_versions AS version
+                      ON version.id = document.current_version_id
+                     AND version.document_id = document.id
+                     AND version.tenant_id = document.tenant_id
+                     AND version.user_id = document.user_id
+                    WHERE document.id = %s
+                      AND document.tenant_id = %s
+                      AND document.user_id = %s
+                      AND document.deleted_at IS NOT NULL
+                    FOR UPDATE OF document, version
+                    """,
+                    (document_id, tenant_id, user_id),
+                )
+                if not cursor.fetchone():
+                    raise HTTPException(status_code=404, detail="Document not found")
+                cursor.execute(
+                    """
+                    UPDATE documents AS document
+                    SET deleted_at = NULL,
+                        status = version.status,
+                        error_message = version.error_message,
+                        updated_at = NOW()
+                    FROM document_versions AS version
+                    WHERE document.id = %s
+                      AND document.tenant_id = %s
+                      AND document.user_id = %s
+                      AND document.deleted_at IS NOT NULL
+                      AND version.id = document.current_version_id
+                      AND version.document_id = document.id
+                      AND version.tenant_id = document.tenant_id
+                      AND version.user_id = document.user_id
+                    RETURNING document.id, document.status, document.entity_count
+                    """,
+                    (document_id, tenant_id, user_id),
+                )
+                restored = cursor.fetchone()
+                if not restored:
+                    raise HTTPException(status_code=404, detail="Document not found")
+                cursor.execute(
+                    """
+                    SELECT derivation.document_version_id, derivation.id AS derivation_id,
+                           derivation.processing_generation,
+                           derivation.processing_total_chunks,
+                           derivation.embedding_profile
+                    FROM documents AS document
+                    JOIN document_versions AS version
+                      ON version.id = document.current_version_id
+                     AND version.document_id = document.id
+                     AND version.tenant_id = document.tenant_id
+                     AND version.user_id = document.user_id
+                    JOIN document_derivations AS derivation
+                      ON derivation.document_version_id = version.id
+                     AND derivation.document_id = document.id
+                     AND derivation.tenant_id = document.tenant_id
+                     AND derivation.user_id = document.user_id
+                    WHERE document.id = %s
+                      AND document.tenant_id = %s
+                      AND document.user_id = %s
+                      AND document.deleted_at IS NULL
+                      AND derivation.status = 'processing'
+                      AND derivation.processing_total_chunks > 0
+                      AND (
+                            (
+                                version.current_derivation_id = derivation.id
+                                AND version.status = 'processing'
+                                AND version.processing_generation = derivation.processing_generation
+                            )
+                            OR version.pending_derivation_id = derivation.id
+                      )
+                    """,
+                    (document_id, tenant_id, user_id),
+                )
+                processing_derivations = cursor.fetchall()
+                restored_jobs = [
+                    (
+                        document_id,
+                        item["document_version_id"],
+                        item["derivation_id"],
+                        tenant_id,
+                        user_id,
+                        item["processing_generation"],
+                        batch_start,
+                        batch_end,
+                        int(item["processing_total_chunks"]),
+                        item["embedding_profile"],
+                    )
+                    for item in processing_derivations
+                    for batch_start, batch_end in embedding_job_ranges(
+                        int(item["processing_total_chunks"])
+                    )
+                ]
+                if restored_jobs:
+                    execute_values(
+                        cursor,
+                        """
+                        INSERT INTO document_embedding_jobs (
+                            document_id, document_version_id, derivation_id,
+                            tenant_id, user_id, processing_generation,
+                            batch_start, batch_end, total_chunks, embedding_profile
+                        ) VALUES %s
+                        ON CONFLICT (document_id, processing_generation, batch_start)
+                        DO UPDATE SET status = 'pending', available_at = NOW(),
+                            publish_attempts = 0, locked_at = NULL,
+                            processing_owner = NULL, redis_stream_id = NULL,
+                            published_at = NULL, processed_at = NULL,
+                            last_error = NULL, updated_at = NOW()
+                        WHERE document_embedding_jobs.status = 'obsolete'
+                        """,
+                        restored_jobs,
+                        template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    )
+    except psycopg2.Error as error:
+        if "workspace document quota prevents restoration" in str(error):
+            raise HTTPException(
+                status_code=409,
+                detail="Workspace document quota prevents restoration.",
+            ) from error
+        raise
+
+    graph_sync = EntityExtractor.restore_document(
+        document_id,
+        user_id,
+        tenant_id,
+        int(restored["entity_count"] or 0),
+    )
+    return {
+        "document_id": str(restored["id"]),
+        "status": restored["status"],
+        "graph_sync": graph_sync,
+    }
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
     uvicorn.run(
