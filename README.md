@@ -158,6 +158,8 @@ The migration identity needs target database and schema DDL rights, and authorit
 
 The release step verifies a real password login and needs a PostgreSQL 16+ client. It can use the configured local database image when no suitable host `psql` is available, but that fallback does not mount custom CA or client-certificate files. Managed targets using those files should provide a configured host client; a missing file or mismatched runtime password stops the release.
 
+For an existing deployment, roll out the application version that sets transaction-local tenant/user context for memory queries, then drain older application instances before applying migration `070_memory_row_security.sql`. That migration rejects inconsistent legacy memory references and enables a `memories`-only row-security policy; queries from older instances without context will see no memory rows. The shared runtime role can set its own context, so this policy guards against accidental unscoped SQL, not a compromised application credential.
+
 ## Development
 
 ### Common commands
