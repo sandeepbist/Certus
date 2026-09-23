@@ -45,7 +45,7 @@ def list_memories(
     page_cursor: uuid.UUID | None = Query(default=None, alias="cursor"),
     identity: RequestIdentity = Depends(require_request_identity),
 ):
-    with get_db_cursor() as cursor:
+    with get_db_cursor(identity=identity) as cursor:
         if page_cursor is not None:
             cursor.execute(
                 """
@@ -112,7 +112,7 @@ def create_memory(
     memory_id = str(uuid.uuid4())
 
     try:
-        with get_db_cursor() as cursor:
+        with get_db_cursor(identity=identity) as cursor:
             register_embedding_profile(cursor, embedding_result.profile)
             cursor.execute(
                 """
@@ -171,7 +171,7 @@ def delete_memory(
     memory_id: str,
     identity: RequestIdentity = Depends(require_request_identity),
 ):
-    with get_db_cursor(dict_cursor=False) as cursor:
+    with get_db_cursor(dict_cursor=False, identity=identity) as cursor:
         cursor.execute(
             """
             UPDATE memories SET is_active = false
@@ -186,7 +186,7 @@ def delete_memory(
 
 @router.post("/memories/reflect")
 def reflect_memories(identity: RequestIdentity = Depends(require_request_identity)):
-    with get_db_cursor() as cursor:
+    with get_db_cursor(identity=identity) as cursor:
         cursor.execute(
             """
             SELECT id
