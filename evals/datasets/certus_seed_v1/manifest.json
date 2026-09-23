@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "dataset_id": "certus-seed",
-  "dataset_version": "1.1.0",
-  "description": "Provider-free seed corpus for exact, historical, paraphrase, multi-evidence, conflict, table, no-answer, rare-term, distractor, and untrusted-document retrieval regressions.",
+  "dataset_version": "1.2.0",
+  "description": "Provider-free seed corpus for exact, historical, paraphrase, multi-evidence, conflict, negative-evidence, table, no-answer, rare-term, distractor, and untrusted-document retrieval regressions.",
   "chunking": {
     "strategy": "token",
     "target_chunk_tokens": 400,
@@ -260,10 +260,27 @@
       ]
     },
     {
-      "query_id": "borealis-unknown-budget",
-      "query": "What annual research budget was approved for Project Borealis?",
+      "query_id": "borealis-unapproved-budget",
+      "query": "Was an annual research budget amount approved for Project Borealis?",
+      "query_class": "negative_evidence",
+      "tags": ["budget", "negative_evidence"],
+      "expected_answer_status": "answered",
+      "expected_facts": ["No approved annual budget is recorded here."],
+      "evidence": [
+        {
+          "evidence_id": "borealis-no-approved-budget",
+          "document_id": "borealis-budget-note",
+          "start_char": 145,
+          "end_char": 247,
+          "quote": "No currency value in this discussion is authoritative, and no approved annual budget is recorded here."
+        }
+      ]
+    },
+    {
+      "query_id": "borealis-unknown-committee-chair",
+      "query": "Who chaired the committee that discussed annual research funding for Project Borealis?",
       "query_class": "no_answer",
-      "tags": ["no_answer", "abstention"],
+      "tags": ["no_answer", "abstention", "person"],
       "expected_answer_status": "insufficient_evidence",
       "expected_facts": [],
       "evidence": []
