@@ -44,7 +44,7 @@ class RetrievalEvaluationContractTests(unittest.TestCase):
     def test_manifest_binds_documents_and_exact_evidence_spans(self):
         self.assertEqual(self.dataset.dataset_id, "certus-seed")
         self.assertEqual(len(self.dataset.documents), 14)
-        self.assertEqual(len(self.dataset.queries), 11)
+        self.assertEqual(len(self.dataset.queries), 12)
         self.assertTrue(any(not query.answerable for query in self.dataset.queries))
         self.assertTrue(any(
             query.expected_answer_status == "conflicting_evidence"
@@ -62,6 +62,42 @@ class RetrievalEvaluationContractTests(unittest.TestCase):
                     document.content[evidence.start_char:evidence.end_char],
                     evidence.quote,
                 )
+
+    def test_negative_evidence_is_answerable_and_unknown_chair_is_unaddressed(self):
+        by_id = {query.query_id: query for query in self.dataset.queries}
+        negative = by_id["borealis-unapproved-budget"]
+        unknown = by_id["borealis-unknown-committee-chair"]
+
+        self.assertEqual(negative.expected_answer_status, "answered")
+        self.assertEqual(
+            negative.expected_facts,
+            ("No approved annual budget is recorded here.",),
+        )
+        self.assertEqual(len(negative.evidence), 1)
+        self.assertEqual(negative.evidence[0].document_id, "borealis-budget-note")
+        self.assertIn(
+            "no approved annual budget is recorded",
+            negative.evidence[0].quote.casefold(),
+        )
+        negative_report = next(
+            report
+            for report in self.report["queries"]
+            if report["query_id"] == negative.query_id
+        )
+        self.assertEqual(
+            negative_report["methods"]["hybrid_rrf"]["metrics"][
+                "evidence_recall_at_5"
+            ],
+            1.0,
+        )
+
+        self.assertEqual(unknown.expected_answer_status, "insufficient_evidence")
+        self.assertEqual(unknown.expected_facts, ())
+        self.assertEqual(unknown.evidence, ())
+        self.assertTrue(all(
+            "chair" not in document.content.casefold()
+            for document in self.dataset.documents
+        ))
 
     def test_provider_free_report_has_replayable_rankings_and_metrics(self):
         hybrid = self.report["methods"]["hybrid_rrf"]["aggregate"]
@@ -115,7 +151,7 @@ class RetrievalEvaluationContractTests(unittest.TestCase):
 
             dataset = load_dataset(manifest_path)
 
-            self.assertEqual(len(dataset.queries), 11)
+            self.assertEqual(len(dataset.queries), 12)
             self.assertTrue(any(not query.answerable for query in dataset.queries))
             self.assertFalse(any(
                 query.expected_answer_status == "conflicting_evidence"

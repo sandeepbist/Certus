@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "dataset_id": "certus-seed",
-  "dataset_version": "1.1.0",
-  "manifest_sha256": "857b8e395d075001ab38f47b5ad59d7c40b8928eeafbfbbaa2a6b183026f62ee",
-  "run_fingerprint": "d86679311c81fdeac000a162b693fb069513aa97f69b8fb7f9a1d3eb80378102",
+  "dataset_version": "1.2.0",
+  "manifest_sha256": "eae9fdf1109df906b8e3d0168e268cc754c5e85a6c79a0c8f802c9ca6409d95f",
+  "run_fingerprint": "0e0e0866fbc36438f5cd1eb7a5167c9c03f241632b8a283f6fd4b8f091e47726",
   "known_gaps": [
-    "The seed hybrid returns candidates for the no-answer budget query, so no_answer_empty_rate is currently 0.0; claim-level abstention remains a P0 gap.",
+    "The provider-free retrieval gate measures evidence coverage, not end-to-end claim-level abstention or semantic entailment.",
     "The offline lexical arm is deterministic token overlap, not the PostgreSQL FTS execution path.",
     "The seed table case evaluates text retrieval only; it does not yet exercise typed cells, formula execution, or cell-region citations.",
     "The seed has no OCR, visual-layout, multilingual, private holdout, or human-annotator agreement cohorts yet."
@@ -19,7 +19,7 @@
     {
       "metric": "dataset.query_count",
       "operator": "==",
-      "value": 11
+      "value": 12
     },
     {
       "metric": "run.provider_calls",

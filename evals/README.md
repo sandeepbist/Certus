@@ -20,8 +20,10 @@ Dataset rules:
 
 - Source files are immutable inputs identified by SHA-256.
 - Every answered or conflicting-evidence query has expected facts and exact character-span evidence.
+- A source-supported denial is answerable when it resolves the question; use `insufficient_evidence` when the requested fact is not recorded.
 - Conflicting-evidence queries require at least two source spans so the gate can prove that competing evidence survives retrieval.
 - Insufficient-evidence queries have neither expected facts nor evidence.
+- `no_answer_empty_rate` is diagnostic only: retrieval may return useful context that does not contain the requested fact.
 - Source paths cannot escape their dataset directory.
 - Manifest changes invalidate the committed baseline identity and require an explicit review.
 - Runner, chunker, embedding, or RRF changes invalidate the run fingerprint and require an explicit review.
