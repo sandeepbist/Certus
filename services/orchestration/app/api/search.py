@@ -49,7 +49,7 @@ def search_workspace(
         "chat": [],
     }
 
-    with get_db_cursor() as cursor:
+    with get_db_cursor(identity=identity) as cursor:
         if "documents" in requested:
             cursor.execute(
                 """

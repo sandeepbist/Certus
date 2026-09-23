@@ -5,7 +5,8 @@ from typing import Any, Dict, List
 
 from psycopg2.extras import RealDictCursor
 
-from app.core.db import get_db_connection
+from app.core.db import get_db_connection, set_db_request_context
+from app.core.identity import RequestIdentity
 from app.core.runtime import RETRIEVAL_STATEMENT_TIMEOUT_MS
 from app.retrieval.hybrid import EmbeddingResult, embed_query
 from services.shared.embeddings import serving_embedding_profile_sql_literal
@@ -61,6 +62,10 @@ def retrieve_relevant_memories(
         )
         with get_db_connection() as connection:
             with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                set_db_request_context(
+                    cursor,
+                    RequestIdentity(tenant_id=tenant_id, user_id=user_id),
+                )
                 cursor.execute(
                     "SELECT set_config('statement_timeout', %s, true)",
                     (f"{RETRIEVAL_STATEMENT_TIMEOUT_MS}ms",),

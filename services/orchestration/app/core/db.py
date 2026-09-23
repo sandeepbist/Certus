@@ -9,6 +9,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 
 from app.core.config import settings
+from app.core.identity import RequestIdentity
 
 
 class DatabasePoolTimeout(RuntimeError):
@@ -114,12 +115,29 @@ def release_db_connection(
 
 
 @contextmanager
-def get_db_cursor(dict_cursor: bool = True):
+def get_db_cursor(
+    dict_cursor: bool = True,
+    *,
+    identity: RequestIdentity | None = None,
+):
     with get_db_connection() as connection:
         with connection.cursor(
             cursor_factory=RealDictCursor if dict_cursor else None
         ) as cursor:
+            if identity is not None:
+                set_db_request_context(cursor, identity)
             yield cursor
+
+
+def set_db_request_context(cursor, identity: RequestIdentity) -> None:
+    """Set tenant scope for this transaction only."""
+    cursor.execute(
+        """
+        SELECT set_config('app.tenant_id', %s, true),
+               set_config('app.user_id', %s, true)
+        """,
+        (identity.tenant_id, identity.user_id),
+    )
 
 
 def close_db_pool() -> None:

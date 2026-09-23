@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from psycopg2.extras import Json
 
 from app.core.config import settings
-from app.core.db import get_db_cursor
+from app.core.db import get_db_cursor, set_db_request_context
 from app.core.identity import RequestIdentity, require_request_identity
 from app.retrieval.export_archive import (
     ExportArchiveLimitExceeded,
@@ -75,6 +75,7 @@ def _row(cursor, query: str, params: tuple) -> dict | None:
 
 
 def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
+    set_db_request_context(cursor, identity)
     tenant_user = (identity.tenant_id, identity.user_id)
     user_tenant = (identity.user_id, identity.tenant_id)
 

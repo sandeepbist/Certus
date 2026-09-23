@@ -16,7 +16,7 @@ def _json_number(value, default=0):
 
 @router.get("/dashboard/overview")
 def dashboard_overview(identity: RequestIdentity = Depends(require_request_identity)):
-    with get_db_cursor() as cursor:
+    with get_db_cursor(identity=identity) as cursor:
         cursor.execute(
             """
             SELECT COUNT(*) FILTER (WHERE deleted_at IS NULL) AS documents,
