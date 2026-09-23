@@ -12,6 +12,7 @@ source "$repository_root/scripts/lib/env-file.sh"
 
 certus_export_env_default DB_HOST localhost "$repository_root/.env"
 certus_export_env_default DB_PORT 5432 "$repository_root/.env"
+certus_export_env_default PG_DOCKER_CONTAINER nexus-postgres "$repository_root/.env"
 certus_export_env_default POSTGRES_USER nexus "$repository_root/.env"
 certus_export_env_default POSTGRES_PASSWORD nexus_dev_password "$repository_root/.env"
 certus_export_env_default POSTGRES_DB nexus "$repository_root/.env"
@@ -120,13 +121,13 @@ if command -v psql &> /dev/null; then
   run_psql() {
     psql -h "$database_host" -p "$database_port" -U "$database_user" -d "$database_name" -v ON_ERROR_STOP=1 "$@"
   }
-elif command -v docker &> /dev/null && docker ps -q -f name=nexus-postgres | grep -q .; then
+elif command -v docker &> /dev/null && docker ps -q -f name="$PG_DOCKER_CONTAINER" | grep -q .; then
   run_psql() {
     docker exec -i \
       -e CERTUS_RUNTIME_DB_USER \
       -e CERTUS_RUNTIME_DB_PASSWORD \
       -e POSTGRES_DB \
-      nexus-postgres psql -U "$database_user" -d "$database_name" -v ON_ERROR_STOP=1 "$@"
+      "$PG_DOCKER_CONTAINER" psql -U "$database_user" -d "$database_name" -v ON_ERROR_STOP=1 "$@"
   }
 else
   echo "❌ Neither local 'psql' nor running 'nexus-postgres' Docker container found."
@@ -221,7 +222,19 @@ SELECT (
   OR role.rolcreaterole
   OR role.rolreplication
   OR role.rolbypassrls
-  OR EXISTS (SELECT 1 FROM pg_auth_members AS membership WHERE membership.member = role.oid OR membership.roleid = role.oid)
+  OR EXISTS (
+    SELECT 1 FROM pg_auth_members AS membership
+    WHERE membership.member = role.oid
+      OR (
+        membership.roleid = role.oid
+        AND (
+          membership.member <> :'certus_migration_role'::regrole
+          OR NOT membership.admin_option
+          OR membership.inherit_option
+          OR membership.set_option
+        )
+      )
+  )
   OR EXISTS (SELECT 1 FROM pg_database WHERE datdba = role.oid)
   OR EXISTS (SELECT 1 FROM pg_namespace WHERE nspname <> 'information_schema' AND left(nspname, 3) <> 'pg_' AND nspowner = role.oid)
   OR EXISTS (
@@ -265,17 +278,72 @@ REVOKE CREATE, TEMPORARY ON DATABASE :"certus_database_name" FROM :"certus_runti
 GRANT CONNECT ON DATABASE :"certus_database_name" TO :"certus_runtime_user";
 REVOKE CREATE ON SCHEMA public FROM :"certus_runtime_user";
 GRANT USAGE ON SCHEMA public TO :"certus_runtime_user";
-REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM :"certus_runtime_user";
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"certus_runtime_user";
-REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM :"certus_runtime_user";
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO :"certus_runtime_user";
-REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM :"certus_runtime_user";
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO :"certus_runtime_user";
 SELECT format('GRANT USAGE ON TYPE %I.%I TO %I', namespace.nspname, type.typname, :'certus_runtime_user')
 FROM pg_type AS type
 JOIN pg_namespace AS namespace ON namespace.oid = type.typnamespace
 WHERE namespace.nspname = 'public'
+  AND type.typelem = 0
   AND pg_has_role(current_user, type.typowner, 'USAGE')
+\gexec
+SELECT format('REVOKE ALL PRIVILEGES ON TABLE %I.%I FROM %I', namespace.nspname, relation.relname, :'certus_runtime_user')
+FROM pg_class AS relation
+JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+WHERE namespace.nspname = 'public'
+  AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+  AND pg_has_role(current_user, relation.relowner, 'USAGE')
+\gexec
+SELECT format(
+  'GRANT %s ON TABLE %I.%I TO %I',
+  CASE WHEN relation.relkind = 'm' THEN 'SELECT' ELSE 'SELECT, INSERT, UPDATE, DELETE' END,
+  namespace.nspname,
+  relation.relname,
+  :'certus_runtime_user'
+)
+FROM pg_class AS relation
+JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+WHERE namespace.nspname = 'public'
+  AND relation.relkind IN ('r', 'p', 'v', 'f', 'm')
+  AND pg_has_role(current_user, relation.relowner, 'USAGE')
+\gexec
+SELECT format('REVOKE ALL PRIVILEGES ON SEQUENCE %I.%I FROM %I', namespace.nspname, sequence.relname, :'certus_runtime_user')
+FROM pg_class AS sequence
+JOIN pg_namespace AS namespace ON namespace.oid = sequence.relnamespace
+WHERE namespace.nspname = 'public'
+  AND sequence.relkind = 'S'
+  AND pg_has_role(current_user, sequence.relowner, 'USAGE')
+\gexec
+SELECT format('GRANT USAGE ON SEQUENCE %I.%I TO %I', namespace.nspname, sequence.relname, :'certus_runtime_user')
+FROM pg_class AS sequence
+JOIN pg_namespace AS namespace ON namespace.oid = sequence.relnamespace
+WHERE namespace.nspname = 'public'
+  AND sequence.relkind = 'S'
+  AND pg_has_role(current_user, sequence.relowner, 'USAGE')
+\gexec
+SELECT format(
+  'REVOKE ALL PRIVILEGES ON FUNCTION %I.%I(%s) FROM %I',
+  namespace.nspname,
+  routine.proname,
+  pg_get_function_identity_arguments(routine.oid),
+  :'certus_runtime_user'
+)
+FROM pg_proc AS routine
+JOIN pg_namespace AS namespace ON namespace.oid = routine.pronamespace
+WHERE namespace.nspname = 'public'
+  AND routine.prokind <> 'p'
+  AND pg_has_role(current_user, routine.proowner, 'USAGE')
+\gexec
+SELECT format(
+  'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I',
+  namespace.nspname,
+  routine.proname,
+  pg_get_function_identity_arguments(routine.oid),
+  :'certus_runtime_user'
+)
+FROM pg_proc AS routine
+JOIN pg_namespace AS namespace ON namespace.oid = routine.pronamespace
+WHERE namespace.nspname = 'public'
+  AND routine.prokind <> 'p'
+  AND pg_has_role(current_user, routine.proowner, 'USAGE')
 \gexec
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" REVOKE ALL ON TABLES FROM :"certus_runtime_user";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"certus_runtime_user";
