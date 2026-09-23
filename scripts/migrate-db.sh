@@ -333,6 +333,25 @@ WHERE namespace.nspname = 'public'
   AND pg_has_role(current_user, routine.proowner, 'USAGE')
 \gexec
 SELECT format(
+  'REVOKE EXECUTE ON FUNCTION %I.%I(%s) FROM PUBLIC',
+  namespace.nspname,
+  routine.proname,
+  pg_get_function_identity_arguments(routine.oid)
+)
+FROM pg_proc AS routine
+JOIN pg_namespace AS namespace ON namespace.oid = routine.pronamespace
+WHERE namespace.nspname = 'public'
+  AND routine.prokind <> 'p'
+  AND routine.proowner = :'certus_migration_role'::regrole
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_depend AS dependency
+    WHERE dependency.classid = 'pg_proc'::regclass
+      AND dependency.objid = routine.oid
+      AND dependency.refclassid = 'pg_extension'::regclass
+      AND dependency.deptype = 'e'
+  )
+\gexec
+SELECT format(
   'GRANT EXECUTE ON FUNCTION %I.%I(%s) TO %I',
   namespace.nspname,
   routine.proname,
@@ -350,6 +369,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" IN SCHEMA public GRAN
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" REVOKE ALL ON SEQUENCES FROM :"certus_runtime_user";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" IN SCHEMA public GRANT USAGE ON SEQUENCES TO :"certus_runtime_user";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" REVOKE EXECUTE ON FUNCTIONS FROM :"certus_runtime_user";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO :"certus_runtime_user";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" REVOKE ALL ON TYPES FROM :"certus_runtime_user";
 ALTER DEFAULT PRIVILEGES FOR ROLE :"certus_migration_role" IN SCHEMA public GRANT USAGE ON TYPES TO :"certus_runtime_user";
