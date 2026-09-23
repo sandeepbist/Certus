@@ -73,7 +73,7 @@ describe('bounded collection pagination forwarding', () => {
       })).statusCode).toBe(200);
       expect((await app.inject({
         method: 'GET',
-        url: `/api/documents?limit=50&search=proof&status=ready&tag=research&source_type=pdf&cursor=${pageCursor}`,
+        url: `/api/documents?limit=50&search=proof&status=deleted&tag=research&source_type=pdf&cursor=${pageCursor}`,
       })).statusCode).toBe(200);
 
       expect(upstreamUrls).toEqual([
@@ -83,7 +83,7 @@ describe('bounded collection pagination forwarding', () => {
         `http://localhost:8002/tasks?limit=50&status=pending&q=proof&cursor=${pageCursor}`,
         `http://localhost:8002/notifications?limit=25&status=unread&type=task_due&cursor=${pageCursor}`,
         `http://localhost:8002/traces?limit=25&q=proof&model=proof-model&status=completed&cursor=${pageCursor}`,
-        `http://localhost:8001/documents?limit=50&cursor=${pageCursor}&search=proof&status=ready&tag=research&source_type=pdf`,
+        `http://localhost:8001/documents?limit=50&cursor=${pageCursor}&search=proof&status=deleted&tag=research&source_type=pdf`,
       ]);
     } finally {
       await app.close();

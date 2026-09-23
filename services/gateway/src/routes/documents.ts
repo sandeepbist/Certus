@@ -243,6 +243,31 @@ export const documentRoutes: FastifyPluginAsync = async (fastify) => {
     }
   });
 
+  fastify.post<{ Params: { id: string } }>(
+    '/api/documents/:id/restore',
+    async (request, reply) => {
+      const { id } = request.params;
+      const { tenantId, userId } = requireAuthContext(request);
+      try {
+        return await ingestionBreaker.execute(async () => {
+          const res = await observedInternalServiceFetch(
+            ingestionBreaker,
+            `${INGESTION_SERVICE_URL}/documents/${encodeURIComponent(id)}/restore`,
+            { method: 'POST' },
+            { tenantId, userId },
+          );
+          const payload = await readUpstreamPayload(res);
+          return reply.status(res.status).send(payload);
+        });
+      } catch {
+        return reply.status(503).send({
+          error: 'Service Unavailable',
+          message: 'The document service is temporarily unavailable.',
+        });
+      }
+    },
+  );
+
   // Document upload endpoint (forwards to Ingestion service)
   fastify.post('/api/documents/upload', async (request, reply) => {
     const { tenantId, userId } = requireAuthContext(request);

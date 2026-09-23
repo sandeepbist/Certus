@@ -307,3 +307,74 @@ class EntityExtractor:
                 safe_error_summary(error, operation="document graph deletion"),
             )
             return "degraded"
+
+    @staticmethod
+    def restore_document(
+        doc_id: str,
+        user_id: str,
+        tenant_id: str,
+        expected_entity_count: int,
+    ) -> str:
+        try:
+            with entity_graph_driver().session() as session:
+                record = session.run(
+                    Query(
+                        """
+                        OPTIONAL MATCH (existing:Document {id: $doc_id})
+                        WITH existing
+                        WHERE existing IS NULL OR (
+                            existing.tenant_id = $tenant_id
+                            AND NOT EXISTS {
+                                MATCH (other:User)-[:OWNS]->(existing)
+                                WHERE other.id <> $user_id
+                            }
+                        )
+                        WITH existing,
+                             existing IS NOT NULL AS existed,
+                             CASE WHEN existing IS NULL THEN false ELSE EXISTS {
+                                 MATCH (existing)-[:MENTIONS]->(:Entity {tenant_id: $tenant_id})
+                             } END AS has_mentions
+                        MERGE (tenant:Tenant {id: $tenant_id})
+                        MERGE (user:User {id: $user_id})
+                        MERGE (document:Document {id: $doc_id, tenant_id: $tenant_id})
+                        ON CREATE SET document.created_at = datetime()
+                        SET document.deleted_at = NULL,
+                            document.status = 'active'
+                        MERGE (user)-[:MEMBER_OF]->(tenant)
+                        MERGE (tenant)-[:CONTAINS]->(document)
+                        MERGE (user)-[:OWNS]->(document)
+                        RETURN existed, has_mentions
+                        """,
+                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
+                    ),
+                    doc_id=doc_id,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                ).single()
+                session.run(
+                    Query(
+                        """
+                        MATCH (entity:Entity {tenant_id: $tenant_id})
+                        OPTIONAL MATCH (document:Document {tenant_id: $tenant_id})-[mention:MENTIONS]->(entity)
+                        WHERE document.deleted_at IS NULL
+                        WITH entity, coalesce(sum(mention.frequency), 0) AS live_mentions
+                        SET entity.mention_count = live_mentions,
+                            entity.stale = live_mentions = 0 AND NOT EXISTS {
+                                MATCH (:Task {tenant_id: $tenant_id})-[:RELATES_TO]->(entity)
+                            }
+                        """,
+                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
+                    ),
+                    tenant_id=tenant_id,
+                ).consume()
+                has_preserved_entities = (
+                    expected_entity_count == 0 or (record and record["has_mentions"])
+                )
+                return "synced" if record and record["existed"] and has_preserved_entities else "degraded"
+        except Exception as error:
+            logger.warning(
+                "Document restoration graph synchronization degraded for %s: %s",
+                safe_log_value(doc_id),
+                safe_error_summary(error, operation="document graph restoration"),
+            )
+            return "degraded"

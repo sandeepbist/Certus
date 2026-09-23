@@ -26,7 +26,7 @@ interface DocumentItem {
   processing_total_chunks: number;
   entity_count: number;
   tags: string[];
-  status: 'ready' | 'processing' | 'error';
+  status: 'ready' | 'processing' | 'error' | 'deleted';
   created_at: string;
 }
 
@@ -34,10 +34,13 @@ function DocumentsContent() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFormat, setSelectedFormat] = useState('all');
+  const [showDeleted, setShowDeleted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [restoringDocumentId, setRestoringDocumentId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refreshDocuments = useCallback(() => {
@@ -82,6 +85,7 @@ function DocumentsContent() {
         const query = new URLSearchParams({ limit: '50' });
         if (searchQuery.trim()) query.set('search', searchQuery.trim());
         if (selectedFormat !== 'all') query.set('source_type', selectedFormat);
+        if (showDeleted) query.set('status', 'deleted');
         if (pageCursor) query.set('cursor', pageCursor);
         const response = await gatewayFetch(`/documents?${query}`, { signal });
         const data: {
@@ -108,7 +112,7 @@ function DocumentsContent() {
         if (pageCursor) setIsLoadingMore(false);
         else setIsLoading(false);
       }
-  }, [searchQuery, selectedFormat]);
+  }, [searchQuery, selectedFormat, showDeleted]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -127,6 +131,34 @@ function DocumentsContent() {
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  };
+
+  const restoreDocument = async (document: DocumentItem) => {
+    setRestoringDocumentId(document.id);
+    setActionMessage(null);
+    try {
+      const response = await gatewayFetch(
+        `/documents/${encodeURIComponent(document.id)}/restore`,
+        { method: 'POST' },
+      );
+      const data = await response.json() as { detail?: unknown; message?: unknown };
+      if (!response.ok) {
+        const message = typeof data.detail === 'string'
+          ? data.detail
+          : typeof data.message === 'string'
+            ? data.message
+            : 'Document could not be restored.';
+        throw new Error(message);
+      }
+      setActionMessage(`Restored “${document.title}”.`);
+      refreshDocuments();
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : 'Document could not be restored.',
+      );
+    } finally {
+      setRestoringDocumentId(null);
+    }
   };
 
   return (
@@ -217,8 +249,22 @@ function DocumentsContent() {
             <option value="docx">Word DOCX</option>
             <option value="text">Text</option>
           </select>
+          <button
+            type="button"
+            aria-pressed={showDeleted}
+            onClick={() => setShowDeleted((value) => !value)}
+            className="rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-xs text-zinc-300 hover:text-white"
+          >
+            {showDeleted ? 'Back to active' : 'View archive'}
+          </button>
         </div>
       </div>
+
+      {actionMessage && (
+        <p role="status" className="text-xs text-zinc-300" aria-live="polite">
+          {actionMessage}
+        </p>
+      )}
 
       {/* Document Table */}
       <div className="rounded-xl border border-zinc-800/80 bg-zinc-950 overflow-hidden">
@@ -250,6 +296,8 @@ function DocumentsContent() {
                       ? 'Documents are unavailable until the service recovers.'
                       : searchQuery.trim() || selectedFormat !== 'all'
                         ? 'No documents match the current filters.'
+                        : showDeleted
+                          ? 'No archived documents.'
                         : 'No documents yet. Upload a file to build your knowledge base.'}
                   </td>
                 </tr>
@@ -291,7 +339,12 @@ function DocumentsContent() {
                       </div>
                     </td>
                     <td className="p-3">
-                      {doc.status === 'ready' ? (
+                      {doc.status === 'deleted' ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] text-zinc-400 font-medium">
+                          <FileText className="w-3 h-3" />
+                          Archived
+                        </span>
+                      ) : doc.status === 'ready' ? (
                         <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
                           <CheckCircle2 className="w-3 h-3" />
                           Ready
@@ -311,13 +364,24 @@ function DocumentsContent() {
                       )}
                     </td>
                     <td className="p-3 pr-4 text-right">
-                      <Link
-                        href={`/documents/${doc.id}`}
-                        className="inline-flex items-center gap-0.5 text-xs text-zinc-300 hover:text-white font-medium"
-                      >
-                        Inspect
-                        <ArrowUpRight className="w-3 h-3" />
-                      </Link>
+                      {doc.status === 'deleted' ? (
+                        <button
+                          type="button"
+                          onClick={() => void restoreDocument(doc)}
+                          disabled={restoringDocumentId !== null}
+                          className="text-xs text-zinc-300 hover:text-white font-medium disabled:opacity-50"
+                        >
+                          {restoringDocumentId === doc.id ? 'Restoring…' : 'Restore'}
+                        </button>
+                      ) : (
+                        <Link
+                          href={`/documents/${doc.id}`}
+                          className="inline-flex items-center gap-0.5 text-xs text-zinc-300 hover:text-white font-medium"
+                        >
+                          Inspect
+                          <ArrowUpRight className="w-3 h-3" />
+                        </Link>
+                      )}
                     </td>
                   </tr>
                 ))
