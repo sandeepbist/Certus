@@ -9,10 +9,34 @@ services:
     network_mode: host
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-nexus}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run make setup for local development}
       POSTGRES_DB: ${POSTGRES_DB:-nexus}
+      CERTUS_RUNTIME_DB_USER: ${CERTUS_RUNTIME_DB_USER:-certus_runtime}
+      CERTUS_RUNTIME_DB_PASSWORD: ${CERTUS_RUNTIME_DB_PASSWORD:?CERTUS_RUNTIME_DB_PASSWORD is required; run make setup for local development}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          case "$${CERTUS_RUNTIME_DB_USER}" in ''|*[!A-Za-z0-9_]*|[0-9]*) exit 1 ;; esac &&
+          pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" &&
+          psql -X -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -tAc
+          "SELECT 1 FROM pg_roles AS role WHERE role.rolname = '$${CERTUS_RUNTIME_DB_USER}'
+          AND role.rolcanlogin AND NOT role.rolsuper AND NOT role.rolcreatedb AND NOT role.rolcreaterole
+          AND NOT role.rolreplication AND NOT role.rolbypassrls
+          AND has_database_privilege(role.oid, current_database(), 'CONNECT')
+          AND NOT has_database_privilege(role.oid, current_database(), 'CREATE')
+          AND NOT has_database_privilege(role.oid, current_database(), 'TEMPORARY')
+          AND has_schema_privilege(role.oid, 'public', 'USAGE')
+          AND NOT has_schema_privilege(role.oid, 'public', 'CREATE')" | grep -qx 1 &&
+          PGREQUIREAUTH=password,md5,scram-sha-256 PGPASSWORD="$${CERTUS_RUNTIME_DB_PASSWORD}" psql
+          -X -h 127.0.0.1 -p 5432
+          -U "$${CERTUS_RUNTIME_DB_USER}" -d "$${POSTGRES_DB}" -tAc "SELECT 1" | grep -qx 1
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
 
   # ============================================================
   # Neo4j 5.x Graph Database
@@ -97,12 +121,16 @@ services:
     stop_grace_period: 45s
     network_mode: host
     depends_on:
-      - postgres
-      - redis
-      - neo4j
-      - temporal
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      neo4j:
+        condition: service_started
+      temporal:
+        condition: service_started
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://nexus:nexus_dev_password@localhost:5432/nexus}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must use CERTUS_RUNTIME_DB_USER and CERTUS_RUNTIME_DB_PASSWORD}
       REDIS_URL: ${REDIS_URL:-redis://localhost:6379}
       NOTIFICATION_EVENT_RETENTION_DAYS: ${NOTIFICATION_EVENT_RETENTION_DAYS:-30}
       REALTIME_EVENT_RETENTION_DAYS: ${REALTIME_EVENT_RETENTION_DAYS:-30}
