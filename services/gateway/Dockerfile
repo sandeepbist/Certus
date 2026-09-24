@@ -20,7 +20,7 @@ COPY services/gateway/package.json ./services/gateway/package.json
 COPY services/web/package.json ./services/web/package.json
 RUN bun install --frozen-lockfile --production --filter gateway
 
-FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS runner
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS runner
 
 WORKDIR /app
 ENV NODE_ENV=production
