@@ -42,7 +42,7 @@ services:
   # Neo4j 5.x Graph Database
   # ============================================================
   neo4j:
-    image: neo4j:5-community@sha256:3388e05ee53c8313d01acdf33e63ad175af95a92226dc8551160564439ce2c8c
+    image: neo4j:5-community@sha256:5eb12ad77fa46ab73e23df9ea1f43f5c0f2a79523435577648e046be042b9b93
     container_name: nexus-neo4j
     restart: unless-stopped
     network_mode: host
