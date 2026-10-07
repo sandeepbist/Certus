@@ -84,6 +84,12 @@ type ExportNotice = {
   record_counts: Record<string, number>;
   expires_at: string;
   download_url: string;
+  originals: {
+    requested: boolean;
+    included_count: number;
+    excluded_count: number;
+    complete: boolean;
+  };
 };
 
 type Enrollment = {
@@ -153,6 +159,7 @@ function SettingsContent() {
   const [securityBusy, setSecurityBusy] = useState(false);
 
   const [exportNotice, setExportNotice] = useState<ExportNotice | null>(null);
+  const [includeExportOriginals, setIncludeExportOriginals] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
   const [newWebhookName, setNewWebhookName] = useState('');
@@ -539,7 +546,7 @@ function SettingsContent() {
     setIsExporting(true);
     try {
       const response = await gatewayFetch(
-        '/export',
+        `/export?include_originals=${includeExportOriginals}`,
         { method: 'POST' },
         { profile: 'processing' },
       );
@@ -563,7 +570,9 @@ function SettingsContent() {
       anchor.remove();
       URL.revokeObjectURL(objectUrl);
       setExportNotice(data as ExportNotice);
-      showNotice('Data archive generated and downloaded.');
+      showNotice(data.originals?.requested && !data.originals.complete
+        ? 'Archive downloaded. Some originals are unavailable; see the exclusion list in the archive.'
+        : 'Data archive generated and downloaded.');
     } catch (error) {
       showError(error, 'The archive could not be generated.');
     } finally {
@@ -1133,8 +1142,13 @@ function SettingsContent() {
             <div className={panelClass}>
               <div>
                 <h2 className="text-sm font-semibold text-white">Data portability</h2>
-                <p className="mt-1 text-xs text-zinc-400">Download a tenant-scoped ZIP containing your stored application data. Credential material is excluded.</p>
+                <p className="mt-1 text-xs text-zinc-400">Download your workspace data, including version history and archived documents. Credential material is excluded. Originals are optional; parsed text and metadata are always included.</p>
               </div>
+              <label className="flex items-center gap-2 text-xs text-zinc-300">
+                <input type="checkbox" checked={includeExportOriginals} disabled={isExporting} onChange={(event) => setIncludeExportOriginals(event.target.checked)} className="accent-white" />
+                Include retained original files for all versions
+              </label>
+              <p className="text-xs text-zinc-500">Originals that were never retained or were erased appear in an explicit exclusion list. Small archives only; download individual originals if the archive exceeds the limit.</p>
               <button type="button" onClick={handleExportData} disabled={isExporting} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white disabled:opacity-40 text-black text-xs font-medium">
                 {isExporting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
                 {isExporting ? 'Generating archive…' : 'Export data archive'}
@@ -1143,6 +1157,11 @@ function SettingsContent() {
                 <div className="p-3.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-2 text-xs">
                   <span className="font-medium text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> {exportNotice.file_name} downloaded</span>
                   <p className="text-zinc-500">{(exportNotice.archive_size_bytes / 1024).toFixed(1)} KB · server copy expires {new Date(exportNotice.expires_at).toLocaleString()}</p>
+                  <p className={exportNotice.originals?.excluded_count ? 'text-amber-400' : 'text-zinc-400'}>
+                    {exportNotice.originals?.requested
+                      ? `${exportNotice.originals.included_count} originals included; ${exportNotice.originals.excluded_count} excluded. See the archive manifest for details.`
+                      : 'Metadata and parsed text only. Original files were not requested.'}
+                  </p>
                 </div>
               )}
               <div className="pt-4 border-t border-zinc-800">

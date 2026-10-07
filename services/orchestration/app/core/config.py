@@ -13,6 +13,7 @@ class Settings:
     NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "nexus_neo4j_dev")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     MCP_TOOLS_URL: str = os.getenv("MCP_TOOLS_URL", "http://localhost:8003")
+    INGESTION_SERVICE_URL: str = os.getenv("INGESTION_SERVICE_URL", "http://localhost:8001")
     NODE_ENV: str = os.getenv("NODE_ENV", "development")
     INTERNAL_SERVICE_TOKEN: str = os.getenv("INTERNAL_SERVICE_TOKEN", "")
     WEBHOOK_ENCRYPTION_KEY: str = os.getenv("WEBHOOK_ENCRYPTION_KEY", "")
@@ -41,6 +42,15 @@ class Settings:
     )
     MAX_EXPORT_RECORDS: int = bounded_int_env(
         "MAX_EXPORT_RECORDS", 250_000, 100, 5_000_000
+    )
+    MAX_EXPORT_ORIGINAL_BYTES: int = bounded_int_env(
+        "MAX_EXPORT_ORIGINAL_BYTES", 32 * 1024 * 1024, 0, 128 * 1024 * 1024
+    )
+    MAX_EXPORT_ORIGINAL_FILES: int = bounded_int_env(
+        "MAX_EXPORT_ORIGINAL_FILES", 256, 1, 1_000
+    )
+    EXPORT_TIMEOUT_SECONDS: int = bounded_int_env(
+        "EXPORT_TIMEOUT_SECONDS", 120, 1, 150
     )
     EXPORT_FETCH_BATCH_SIZE: int = bounded_int_env(
         "EXPORT_FETCH_BATCH_SIZE", 250, 10, 10_000

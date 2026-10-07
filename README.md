@@ -94,6 +94,26 @@ original file
 
 ## Quick start
 
+### Workspace exports
+
+Settings supports a metadata-and-parsed-text ZIP, with an optional inclusion of
+retained original files for all of your document versions, including archived
+documents. `POST /api/export?include_originals=true` requests the same archive.
+Schema v13 maps each original to its version, archive path, byte length, SHA-256,
+and original filename. Originals use opaque UUID paths inside the ZIP. Versions
+whose originals were never retained, erased, or scheduled for erasure appear in
+an explicit exclusion list; the response and manifest report whether all
+originals were included. Unexpected missing or corrupt downloads abort the
+export rather than producing an apparently complete archive.
+
+The local synchronous path defaults to 32 MiB of original bytes, 256 original
+files, 64 MiB of source JSON, and 100 MiB of compressed ZIP data. A 120-second
+build budget bounds snapshot queries and is checked during downloads and ZIP
+construction; original reads have a five-second inactivity timeout. Failed
+builds save no archive. Downloads require the same tenant and user and expire
+after 48 hours. Large asynchronous archives and direct workspace restore are
+not implemented yet. See `.env.example` for the configurable limits.
+
 ### Requirements
 
 - [Bun](https://bun.sh/) 1.4 or newer

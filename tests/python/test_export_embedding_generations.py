@@ -51,12 +51,12 @@ class ExportCursor:
 
 
 class ExportEmbeddingGenerationTests(unittest.TestCase):
-    def test_schema_v12_exports_control_and_rebuild_provenance_without_vectors(self):
+    def test_schema_v13_exports_control_and_rebuild_provenance_without_vectors(self):
         cursor = ExportCursor()
 
         data = export_api._collect_export_data(cursor, IDENTITY)
 
-        self.assertEqual(export_api.EXPORT_SCHEMA_VERSION, 12)
+        self.assertEqual(export_api.EXPORT_SCHEMA_VERSION, 13)
         self.assertEqual(data["embedding_generations"][0]["status"], "active")
         self.assertEqual(
             data["embedding_generations"][0]["creation_reason"], "operator"
