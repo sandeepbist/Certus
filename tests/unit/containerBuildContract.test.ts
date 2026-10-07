@@ -59,10 +59,10 @@ describe('container build contracts', () => {
 
     expect(webPackage).toContain('"next": "15.5.24"');
     expect(rootPackage).toContain('"postcss": "8.5.26"');
-    expect(rootPackage).toContain('"sharp": "0.35.4"');
+    expect(rootPackage).toContain('"sharp": "0.35.5"');
     expect(lock).toContain('"next@15.5.24"');
     expect(lock).toContain('"postcss@8.5.26"');
-    expect(lock).toContain('"sharp@0.35.4"');
+    expect(lock).toContain('"sharp@0.35.5"');
     expect(lock).not.toContain('"next@15.5.23"');
     expect(lock).not.toContain('"postcss@8.4.31"');
     expect(lock).not.toContain('"sharp@0.34.5"');
