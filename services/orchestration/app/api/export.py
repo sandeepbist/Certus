@@ -1,7 +1,10 @@
 import uuid
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from psycopg2.extras import Json
 
 from app.core.config import settings
@@ -10,24 +13,35 @@ from app.core.identity import RequestIdentity, require_request_identity
 from app.retrieval.export_archive import (
     ExportArchiveLimitExceeded,
     ExportCollectionBudget,
+    ExportOriginalIntegrityError,
     build_export_archive,
     record_counts,
 )
+from app.retrieval.export_originals import download_export_originals, plan_export_originals
 
 router = APIRouter(prefix="", tags=["Data Portability & GDPR Compliance"])
 
 EXPORT_RETENTION_HOURS = 48
-EXPORT_SCHEMA_VERSION = 12
+EXPORT_SCHEMA_VERSION = 13
 
 
 class _BudgetedExportCursor:
     """Apply collection limits while retaining the cursor API used below."""
 
-    def __init__(self, cursor, budget: ExportCollectionBudget):
+    def __init__(self, cursor, budget: ExportCollectionBudget, deadline: float | None = None):
         self._cursor = cursor
         self._budget = budget
+        self._deadline = deadline
 
     def execute(self, query: str, params: tuple | None = None):
+        if self._deadline is not None:
+            remaining_ms = int((self._deadline - monotonic()) * 1000)
+            if remaining_ms <= 0:
+                raise HTTPException(status_code=504, detail="The data export exceeded its time limit.")
+            self._cursor.execute(
+                "SELECT set_config('statement_timeout', %s, true)",
+                (f"{min(remaining_ms, settings.EXPORT_STATEMENT_TIMEOUT_MS)}ms",),
+            )
         return self._cursor.execute(query, params)
 
     def fetchone(self):
@@ -577,7 +591,16 @@ def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
 
 
 @router.post("/export")
-def generate_data_export(identity: RequestIdentity = Depends(require_request_identity)):
+def generate_data_export(
+    identity: RequestIdentity = Depends(require_request_identity),
+    include_originals: bool = Query(False),
+):
+    deadline = monotonic() + settings.EXPORT_TIMEOUT_SECONDS
+
+    def check_deadline():
+        if monotonic() >= deadline:
+            raise HTTPException(status_code=504, detail="The data export exceeded its time limit.")
+
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=EXPORT_RETENTION_HOURS)
     export_id = str(uuid.uuid4())
@@ -601,7 +624,9 @@ def generate_data_export(identity: RequestIdentity = Depends(require_request_ide
             max_records=settings.MAX_EXPORT_RECORDS,
         )
         try:
-            data = _collect_export_data(_BudgetedExportCursor(cursor, budget), identity)
+            data = _collect_export_data(_BudgetedExportCursor(cursor, budget, deadline), identity)
+            check_deadline()
+            originals_manifest = plan_export_originals(data, identity, include_originals)
             counts = record_counts(data)
             payload = {
                 "manifest": {
@@ -629,26 +654,39 @@ def generate_data_export(identity: RequestIdentity = Depends(require_request_ide
                         }
                     ],
                     "record_counts": counts,
+                    "originals": originals_manifest,
                 },
                 "data": data,
             }
-            archive = build_export_archive(
-                payload,
-                max_uncompressed_bytes=settings.MAX_EXPORT_SOURCE_BYTES,
-            )
+            with closing(download_export_originals(originals_manifest, identity, deadline)) as originals:
+                archive = build_export_archive(
+                    payload,
+                    max_uncompressed_bytes=settings.MAX_EXPORT_SOURCE_BYTES,
+                    max_archive_bytes=settings.MAX_EXPORT_ARCHIVE_BYTES,
+                    originals=originals,
+                    max_original_bytes=settings.MAX_EXPORT_ORIGINAL_BYTES,
+                    check_deadline=check_deadline,
+                )
         except ExportArchiveLimitExceeded as exc:
             raise HTTPException(
                 status_code=413,
                 detail=(
                     "This workspace exceeds the bounded synchronous export limit. "
-                    "Use the asynchronous object-storage export path for large workspaces."
+                    "Try a metadata-only export or download individual originals. "
+                    "Large workspace archives are not supported yet."
                 ),
             ) from exc
-        if len(archive) > settings.MAX_EXPORT_ARCHIVE_BYTES:
+        except ExportOriginalIntegrityError as exc:
             raise HTTPException(
-                status_code=413,
-                detail="The compressed export exceeds the configured archive limit.",
-            )
+                status_code=502,
+                detail="An original failed integrity verification. No export was saved.",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Original download is temporarily unavailable. No export was saved.",
+            ) from exc
+        check_deadline()
 
         cursor.execute(
             """
@@ -678,6 +716,7 @@ def generate_data_export(identity: RequestIdentity = Depends(require_request_ide
         "file_name": file_name,
         "archive_size_bytes": len(archive),
         "record_counts": counts,
+        "originals": {key: value for key, value in originals_manifest.items() if key != "files"},
         "expires_at": expires_at,
         "download_url": f"/export/{export_id}",
     }

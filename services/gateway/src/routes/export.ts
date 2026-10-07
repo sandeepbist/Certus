@@ -12,12 +12,22 @@ import { sendServiceUnavailable } from '../utils/serviceUnavailable.js';
 const ORCHESTRATION_SERVICE_URL = process.env.ORCHESTRATION_SERVICE_URL || 'http://localhost:8002';
 
 export const exportRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.post('/api/export', async (request, reply) => {
+  fastify.post<{ Querystring: { include_originals?: boolean } }>('/api/export', {
+    schema: {
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { include_originals: { type: 'boolean' } },
+      },
+    },
+  }, async (request, reply) => {
     const { tenantId, userId } = requireAuthContext(request);
     const signal = clientDisconnectSignal(request, reply);
     try {
       return await orchestrationBreaker.execute(async () => {
-        const res = await observedInternalServiceFetch(orchestrationBreaker, `${ORCHESTRATION_SERVICE_URL}/export`, {
+        const url = new URL('/export', ORCHESTRATION_SERVICE_URL);
+        url.searchParams.set('include_originals', String(request.query.include_originals ?? false));
+        const res = await observedInternalServiceFetch(orchestrationBreaker, url.toString(), {
           method: 'POST',
           signal,
         }, { tenantId, userId }, { profile: 'processing' });

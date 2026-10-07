@@ -1,4 +1,5 @@
 import json
+import hashlib
 import unittest
 from datetime import datetime, timezone
 from io import BytesIO
@@ -9,6 +10,8 @@ from services.orchestration.app.retrieval.export_archive import (
     ARCHIVE_ENTRY_NAME,
     ExportArchiveLimitExceeded,
     ExportCollectionBudget,
+    ExportOriginal,
+    ExportOriginalIntegrityError,
     build_export_archive,
     record_counts,
 )
@@ -59,6 +62,31 @@ class ExportArchiveTests(unittest.TestCase):
         with self.assertRaises(ExportArchiveLimitExceeded):
             budget.add({"id": "three"})
         self.assertEqual(budget.records, 2)
+
+    def test_originals_are_exact_and_corrupt_or_oversized_streams_fail(self):
+        content = b"exact original\x00\xff"
+        digest = hashlib.sha256(content).hexdigest()
+
+        def original(chunks, path="originals/version/source.bin"):
+            return ExportOriginal(path, len(content), digest, chunks)
+
+        archive = build_export_archive(
+            {"manifest": {}}, originals=[original([content[:4], content[4:]])],
+            max_original_bytes=len(content), max_archive_bytes=4096,
+        )
+        with ZipFile(BytesIO(archive)) as zip_file:
+            self.assertEqual(zip_file.read("originals/version/source.bin"), content)
+            self.assertIsNone(zip_file.testzip())
+        for chunks in ([content[:-1]], [content + b"x"], [b"x" * len(content)]):
+            with self.subTest(chunks=chunks), self.assertRaises(ExportOriginalIntegrityError):
+                build_export_archive({}, originals=[original(chunks)], max_original_bytes=len(content))
+        with self.assertRaises(ExportArchiveLimitExceeded):
+            build_export_archive({}, originals=[original([content])], max_original_bytes=len(content) - 1)
+        with self.assertRaises(ExportArchiveLimitExceeded):
+            build_export_archive({}, max_archive_bytes=20)
+        for path in ("../original.bin", "/original.bin", "a\\original.bin", ARCHIVE_ENTRY_NAME):
+            with self.subTest(path=path), self.assertRaises(ExportOriginalIntegrityError):
+                build_export_archive({}, originals=[original([content], path)], max_original_bytes=len(content))
 
 
 if __name__ == "__main__":

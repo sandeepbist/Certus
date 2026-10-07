@@ -85,6 +85,19 @@ class ExportGuardrailTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 409)
 
+    def test_snapshot_queries_use_remaining_build_time(self):
+        cursor = FakeCursor()
+        budget = ExportCollectionBudget(max_source_bytes=1024, max_records=10)
+        wrapped = _BudgetedExportCursor(cursor, budget, deadline=20)
+        with patch.object(export_api, "monotonic", return_value=10):
+            wrapped.execute("SELECT id FROM documents")
+        self.assertEqual(cursor.executions[0][1], ("10000ms",))
+        with patch.object(export_api, "monotonic", return_value=21):
+            with self.assertRaises(HTTPException) as raised:
+                wrapped.execute("SELECT id FROM documents")
+        self.assertEqual(raised.exception.status_code, 504)
+        self.assertEqual(len(cursor.executions), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

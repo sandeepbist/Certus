@@ -1800,6 +1800,7 @@ def download_document_original(
     user_id: str = Header(..., alias="X-Certus-User-Id"),
     version: Optional[int] = Query(None, ge=1),
     disposition: Literal["attachment", "inline"] = Query("attachment"),
+    include_archived: bool = Query(False),
 ):
     with get_db() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -1829,9 +1830,9 @@ def download_document_original(
                  AND source.user_id = document.user_id
                 WHERE document.id = %s
                   AND document.tenant_id = %s AND document.user_id = %s
-                  AND document.deleted_at IS NULL
+                  AND (%s OR document.deleted_at IS NULL)
                 """,
-                (version, version, document_id, tenant_id, user_id),
+                (version, version, document_id, tenant_id, user_id, include_archived),
             )
             source = cursor.fetchone()
 
