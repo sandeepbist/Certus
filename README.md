@@ -81,6 +81,12 @@ The Fastify gateway is the application boundary. Browser requests are authentica
 
 ### Evidence path
 
+Each exact claim span in the chat citation drawer links to its selected source
+text. The resolver checks the Unicode code-point range and SHA-256 inside the
+authorized immutable chunk; native PDF highlights cover that same selected
+range. Full-chunk inspection remains available. A verified source location is
+not a semantic entailment verdict.
+
 ```text
 original file
     → immutable source version

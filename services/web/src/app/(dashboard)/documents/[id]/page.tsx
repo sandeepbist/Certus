@@ -109,7 +109,7 @@ interface EvidenceEnvelope {
   resolution_status: 'verified' | 'unavailable';
   unavailable_reason?: string | null;
   evidence_handle: string;
-  support_scope: 'retrieved_context_not_claim_aligned';
+  support_scope: 'retrieved_context_not_claim_aligned' | 'requested_source_span_not_claim_verified';
   document: {
     id: string;
     title: string;
@@ -173,6 +173,9 @@ function DocumentDetailContent() {
   const docId = params?.id as string;
   const versionParam = searchParams.get('version');
   const evidenceChunkId = searchParams.get('chunk');
+  const selectionStart = searchParams.get('start');
+  const selectionEnd = searchParams.get('end');
+  const selectionSha256 = searchParams.get('quote_sha256');
   const requestedVersion = Number(versionParam);
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [chunks, setChunks] = useState<ChunkItem[]>([]);
@@ -275,8 +278,14 @@ function DocumentDetailContent() {
       setEvidence(null);
       setEvidenceError(null);
       try {
+        const query = new URLSearchParams();
+        for (const [key, value] of [
+          ['start', selectionStart], ['end', selectionEnd], ['quote_sha256', selectionSha256],
+        ] as const) {
+          if (value !== null) query.set(key, value);
+        }
         const response = await gatewayFetch(
-          `/documents/${encodeURIComponent(docId)}/evidence/${encodeURIComponent(evidenceChunkId)}`,
+          `/documents/${encodeURIComponent(docId)}/evidence/${encodeURIComponent(evidenceChunkId)}${query.size ? `?${query}` : ''}`,
           { signal: controller.signal },
         );
         const data: unknown = await response.json();
@@ -294,7 +303,7 @@ function DocumentDetailContent() {
     }
     void fetchEvidence();
     return () => controller.abort();
-  }, [docId, evidenceChunkId]);
+  }, [docId, evidenceChunkId, selectionStart, selectionEnd, selectionSha256]);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -493,7 +502,9 @@ function DocumentDetailContent() {
             <div>
               <h2 className="font-medium text-blue-100">Resolved retrieved evidence</h2>
               <p className="mt-1 text-[11px] text-blue-300/80">
-                This verifies the retrieved passage and immutable lineage. It does not yet assert claim-level alignment to every sentence in the answer.
+                {evidence?.support_scope === 'requested_source_span_not_claim_verified'
+                  ? 'This verifies the selected source text. Semantic support for the answer has not been evaluated.'
+                  : 'This verifies the full retrieved chunk and immutable lineage. Semantic support for the answer has not been evaluated.'}
               </p>
             </div>
             <Link

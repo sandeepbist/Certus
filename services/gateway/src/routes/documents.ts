@@ -40,6 +40,12 @@ interface OriginalDownloadQuery {
   disposition?: 'attachment' | 'inline';
 }
 
+interface EvidenceQuery {
+  start?: string;
+  end?: string;
+  quote_sha256?: string;
+}
+
 async function readUpstreamPayload(response: Response): Promise<Record<string, unknown>> {
   try {
     return await response.json() as Record<string, unknown>;
@@ -108,16 +114,21 @@ export const documentRoutes: FastifyPluginAsync = async (fastify) => {
     },
   );
 
-  fastify.get<{ Params: { id: string; chunkId: string } }>(
+  fastify.get<{ Params: { id: string; chunkId: string }; Querystring: EvidenceQuery }>(
     '/api/documents/:id/evidence/:chunkId',
     async (request, reply) => {
       const { id, chunkId } = request.params;
       const { tenantId, userId } = requireAuthContext(request);
       try {
         return await ingestionBreaker.execute(async () => {
+          const query = new URLSearchParams();
+          for (const field of ['start', 'end', 'quote_sha256'] as const) {
+            const value = request.query[field];
+            if (value !== undefined) query.set(field, value);
+          }
           const res = await observedInternalServiceFetch(
             ingestionBreaker,
-            `${INGESTION_SERVICE_URL}/documents/${encodeURIComponent(id)}/evidence/${encodeURIComponent(chunkId)}`,
+            `${INGESTION_SERVICE_URL}/documents/${encodeURIComponent(id)}/evidence/${encodeURIComponent(chunkId)}${query.size ? `?${query}` : ''}`,
             {},
             { tenantId, userId },
           );

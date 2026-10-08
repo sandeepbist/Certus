@@ -10,6 +10,10 @@ class EvidenceIntegrityError(RuntimeError):
     """Raised when stored evidence lineage cannot be verified exactly."""
 
 
+class EvidenceSelectionError(ValueError):
+    """The requested digest-bound range does not resolve inside this chunk."""
+
+
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -17,8 +21,22 @@ def _sha256_text(value: str) -> str:
 def build_evidence_envelope(
     row: Mapping[str, Any],
     visual_target: dict[str, Any] | None = None,
+    *,
+    selection_start: int | None = None,
+    selection_end: int | None = None,
+    selection_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build a fail-closed selector envelope from one tenant-scoped DB row."""
+
+    has_selection = any(value is not None for value in (
+        selection_start, selection_end, selection_sha256,
+    ))
+    if has_selection and (
+        type(selection_start) is not int
+        or type(selection_end) is not int
+        or not isinstance(selection_sha256, str)
+    ):
+        raise EvidenceSelectionError("A source selection requires start, end, and quote_sha256.")
 
     version_hash = str(row["version_content_hash"])
     original_hash = str(row["original_content_sha256"])
@@ -46,6 +64,22 @@ def build_evidence_envelope(
         suffix = row["resolved_suffix"]
         if not isinstance(prefix, str) or not isinstance(suffix, str):
             raise EvidenceIntegrityError("text quote context could not be resolved")
+        if has_selection:
+            if not start <= selection_start < selection_end <= end:
+                raise EvidenceSelectionError("The source selection is outside its cited chunk.")
+            parsed_text = row.get("parsed_content_text")
+            if (
+                not isinstance(parsed_text, str)
+                or end > len(parsed_text)
+                or parsed_text[start:end] != exact
+            ):
+                raise EvidenceIntegrityError("chunk text does not match its parsed artifact")
+            exact = parsed_text[selection_start:selection_end]
+            if _sha256_text(exact) != selection_sha256:
+                raise EvidenceSelectionError("The source selection digest does not match its exact text.")
+            start, end = selection_start, selection_end
+            prefix = parsed_text[max(0, start - 32):start]
+            suffix = parsed_text[end:end + 32]
         text_target = {
             "source": f"urn:certus:parsed-artifact:{row['parsed_artifact_id']}",
             "state": {
@@ -70,6 +104,8 @@ def build_evidence_envelope(
         }
         resolution_status = "verified"
     elif locator_status == "unavailable":
+        if has_selection:
+            raise EvidenceSelectionError("An exact source selection is unavailable for this legacy chunk.")
         if locator_profile != LEGACY_TEXT_LOCATOR_PROFILE:
             raise EvidenceIntegrityError("unavailable text locator has an unknown profile")
         unavailable_reason = str(row["text_locator_unavailable_reason"] or "")
@@ -91,11 +127,14 @@ def build_evidence_envelope(
         }
 
     return {
-        "schema_version": 1,
+        "schema_version": 2 if has_selection else 1,
         "resolution_status": resolution_status,
         "unavailable_reason": unavailable_reason,
         "evidence_handle": str(row["chunk_id"]),
-        "support_scope": "retrieved_context_not_claim_aligned",
+        "support_scope": (
+            "requested_source_span_not_claim_verified"
+            if has_selection else "retrieved_context_not_claim_aligned"
+        ),
         "document": {
             "id": str(row["document_id"]),
             "title": str(row["document_title"]),

@@ -89,7 +89,7 @@ def resolve_pdf_visual_target(
     row: Mapping[str, Any],
     storage: OriginalObjectStorage,
 ) -> dict[str, Any]:
-    """Resolve one exact chunk span to verified native PDF glyph quads."""
+    """Resolve one exact parsed-text span to verified native PDF glyph quads."""
 
     if row["layout_status"] != "ready":
         return {

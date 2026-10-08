@@ -32,7 +32,12 @@ load_dotenv(REPOSITORY_ROOT / ".env")
 from app.parsers.factory import ParserFactory, ParserException
 from app.chunking.chunker import ChunkerFactory, trim_text_span
 from app.extractors.entity_extractor import EntityExtractor, close_entity_graph_driver
-from app.evidence import EXACT_TEXT_LOCATOR_PROFILE, EvidenceIntegrityError, build_evidence_envelope
+from app.evidence import (
+    EXACT_TEXT_LOCATOR_PROFILE,
+    EvidenceIntegrityError,
+    EvidenceSelectionError,
+    build_evidence_envelope,
+)
 from app.layout_evidence import LayoutEvidenceIntegrityError, resolve_pdf_visual_target
 from app.processing import (
     chunker_profile,
@@ -1606,6 +1611,9 @@ def resolve_document_evidence(
     chunk_id: uuid.UUID,
     tenant_id: str = Header(..., alias="X-Certus-Tenant-Id"),
     user_id: str = Header(..., alias="X-Certus-User-Id"),
+    start: Optional[int] = Query(None, ge=0),
+    end: Optional[int] = Query(None, ge=1),
+    quote_sha256: Optional[str] = Query(None, pattern=r"^[a-f0-9]{64}$"),
 ):
     with get_db() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -1715,18 +1723,25 @@ def resolve_document_evidence(
     if not evidence_row:
         raise HTTPException(status_code=404, detail="Evidence handle not found")
     try:
-        visual_target = None
+        envelope = build_evidence_envelope(
+            evidence_row,
+            selection_start=start,
+            selection_end=end,
+            selection_sha256=quote_sha256,
+        )
         source_mime_type = str(evidence_row["source_mime_type"]).split(";", 1)[0].lower()
         if (
             source_mime_type == "application/pdf"
             and evidence_row["text_locator_status"] == "exact"
             and evidence_row["layout_artifact_id"] is not None
         ):
-            visual_target = resolve_pdf_visual_target(
-                evidence_row,
+            position = envelope["text_target"]["selector"][0]
+            envelope["visual_target"] = resolve_pdf_visual_target(
+                {**evidence_row, "start_char": position["start"], "end_char": position["end"]},
                 ready_original_storage(),
             )
-        envelope = build_evidence_envelope(evidence_row, visual_target)
+    except EvidenceSelectionError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except (EvidenceIntegrityError, LayoutEvidenceIntegrityError) as error:
         logger.error(
             "Evidence handle %s failed closed: %s",
