@@ -132,10 +132,12 @@ class EntityExtractor:
         entities: List[ExtractedEntity],
     ):
         try:
-            with entity_graph_driver().session() as session:
-                session.run(
-                    Query(
-                        """
+            with (
+                entity_graph_driver().session() as session,
+                session.begin_transaction(timeout=NEO4J_QUERY_TIMEOUT_SECONDS) as transaction,
+            ):
+                transaction.run(
+                    """
                     MERGE (tenant:Tenant {id: $tenant_id})
                     MERGE (u:User {id: $user_id})
                     MERGE (d:Document {id: $doc_id})
@@ -147,24 +149,19 @@ class EntityExtractor:
                     MERGE (u)-[:MEMBER_OF]->(tenant)
                     MERGE (tenant)-[:CONTAINS]->(d)
                     MERGE (u)-[:OWNS]->(d)
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     tenant_id=tenant_id,
                     user_id=user_id,
                     doc_id=doc_id,
                     doc_title=doc_title,
                 ).consume()
 
-                session.run(
-                    Query(
-                        """
+                transaction.run(
+                    """
                     MATCH (d:Document {id: $doc_id, tenant_id: $tenant_id})
                     MATCH (d)-[relationship:MENTIONS]->()
                     DELETE relationship
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     doc_id=doc_id,
                     tenant_id=tenant_id,
                 ).consume()
@@ -179,9 +176,8 @@ class EntityExtractor:
                     for entity in entities
                 ]
                 if entity_rows:
-                    session.run(
-                        Query(
-                            """
+                    transaction.run(
+                        """
                         UNWIND $entities AS entity
                         MERGE (e:Entity {tenant_id: $tenant_id, normalized_name: entity.normalized_name})
                         ON CREATE SET e.name = entity.name, e.type = entity.type, e.mention_count = 0
@@ -190,9 +186,7 @@ class EntityExtractor:
                         MATCH (d:Document {id: $doc_id, tenant_id: $tenant_id})
                         MERGE (d)-[mention:MENTIONS]->(e)
                         SET mention.frequency = entity.mention_count
-                            """,
-                            timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                        ),
+                        """,
                         tenant_id=tenant_id,
                         entities=entity_rows,
                         doc_id=doc_id,
@@ -201,9 +195,8 @@ class EntityExtractor:
                 # Recompute aggregate counts after replacements. Entities with
                 # no live document or task connections remain as explicitly
                 # stale nodes so soft-deleted knowledge can be audited.
-                session.run(
-                    Query(
-                        """
+                transaction.run(
+                    """
                     MATCH (entity:Entity {tenant_id: $tenant_id})
                     OPTIONAL MATCH (document:Document {tenant_id: $tenant_id})-[mention:MENTIONS]->(entity)
                     WHERE document.deleted_at IS NULL
@@ -212,11 +205,10 @@ class EntityExtractor:
                         entity.stale = total_mentions = 0 AND NOT EXISTS {
                             MATCH (:Task {tenant_id: $tenant_id})-[:RELATES_TO]->(entity)
                         }
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     tenant_id=tenant_id,
                 ).consume()
+                transaction.commit()
             logger.info(
                 "Successfully synced %s entities to Neo4j for document [%s]",
                 len(entities),
@@ -267,25 +259,24 @@ class EntityExtractor:
     @staticmethod
     def mark_document_deleted(doc_id: str, user_id: str, tenant_id: str, deleted_at: str) -> str:
         try:
-            with entity_graph_driver().session() as session:
-                session.run(
-                    Query(
-                        """
+            with (
+                entity_graph_driver().session() as session,
+                session.begin_transaction(timeout=NEO4J_QUERY_TIMEOUT_SECONDS) as transaction,
+            ):
+                transaction.run(
+                    """
                         MATCH (user:User {id: $user_id})-[:OWNS]->
                               (document:Document {id: $doc_id, tenant_id: $tenant_id})
                         SET document.deleted_at = datetime($deleted_at),
                             document.status = 'deleted'
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     doc_id=doc_id,
                     user_id=user_id,
                     tenant_id=tenant_id,
                     deleted_at=deleted_at,
                 ).consume()
-                session.run(
-                    Query(
-                        """
+                transaction.run(
+                    """
                         MATCH (entity:Entity {tenant_id: $tenant_id})
                         OPTIONAL MATCH (active:Document {tenant_id: $tenant_id})-[mention:MENTIONS]->(entity)
                         WHERE active.deleted_at IS NULL
@@ -294,11 +285,10 @@ class EntityExtractor:
                             entity.stale = live_mentions = 0 AND NOT EXISTS {
                                 MATCH (:Task {tenant_id: $tenant_id})-[:RELATES_TO]->(entity)
                             }
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     tenant_id=tenant_id,
                 ).consume()
+                transaction.commit()
             return "synced"
         except Exception as error:
             logger.warning(
@@ -316,10 +306,12 @@ class EntityExtractor:
         expected_entity_count: int,
     ) -> str:
         try:
-            with entity_graph_driver().session() as session:
-                record = session.run(
-                    Query(
-                        """
+            with (
+                entity_graph_driver().session() as session,
+                session.begin_transaction(timeout=NEO4J_QUERY_TIMEOUT_SECONDS) as transaction,
+            ):
+                record = transaction.run(
+                    """
                         OPTIONAL MATCH (existing:Document {id: $doc_id})
                         WITH existing
                         WHERE existing IS NULL OR (
@@ -344,16 +336,13 @@ class EntityExtractor:
                         MERGE (tenant)-[:CONTAINS]->(document)
                         MERGE (user)-[:OWNS]->(document)
                         RETURN existed, has_mentions
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     doc_id=doc_id,
                     user_id=user_id,
                     tenant_id=tenant_id,
                 ).single()
-                session.run(
-                    Query(
-                        """
+                transaction.run(
+                    """
                         MATCH (entity:Entity {tenant_id: $tenant_id})
                         OPTIONAL MATCH (document:Document {tenant_id: $tenant_id})-[mention:MENTIONS]->(entity)
                         WHERE document.deleted_at IS NULL
@@ -362,14 +351,13 @@ class EntityExtractor:
                             entity.stale = live_mentions = 0 AND NOT EXISTS {
                                 MATCH (:Task {tenant_id: $tenant_id})-[:RELATES_TO]->(entity)
                             }
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
+                    """,
                     tenant_id=tenant_id,
                 ).consume()
                 has_preserved_entities = (
                     expected_entity_count == 0 or (record and record["has_mentions"])
                 )
+                transaction.commit()
                 return "synced" if record and record["existed"] and has_preserved_entities else "degraded"
         except Exception as error:
             logger.warning(

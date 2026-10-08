@@ -291,8 +291,14 @@ class GraphRestoreTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return None
 
+            def begin_transaction(self, **_kwargs):
+                return self
+
+            def commit(self):
+                return None
+
             def run(self, query, **_params):
-                self.queries.append(query.text)
+                self.queries.append(query)
                 return Result()
 
         class Driver:
