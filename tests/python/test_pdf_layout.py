@@ -94,6 +94,20 @@ class PdfLayoutEvidenceTests(unittest.TestCase):
                 MemoryLayoutStorage(layout.compressed_bytes),
             )
 
+    def test_narrow_source_selection_excludes_other_chunk_glyphs(self):
+        layout = self.document.pdf_layout
+        start = self.document.raw_text.index("proof")
+        visual = resolve_pdf_visual_target(
+            layout_row(self.document, start_char=start, end_char=start + len("proof")),
+            MemoryLayoutStorage(layout.compressed_bytes),
+        )
+        glyphs = [
+            glyph for page in visual["selector"]["pages"]
+            for run in page["runs"] for glyph in run["glyphs"]
+        ]
+        self.assertEqual(len(glyphs), len("proof"))
+        self.assertEqual([glyph["parsed_start"] for glyph in glyphs], list(range(start, start + 5)))
+
 
 if __name__ == "__main__":
     unittest.main()

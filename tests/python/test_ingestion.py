@@ -22,7 +22,9 @@ from services.ingestion.app.extractors.entity_extractor import (
     entity_graph_driver,
 )
 from services.ingestion.app.extractors import entity_extractor as entity_extractor_module
-from services.ingestion.app.evidence import EvidenceIntegrityError, build_evidence_envelope
+from services.ingestion.app.evidence import (
+    EvidenceIntegrityError, EvidenceSelectionError, build_evidence_envelope,
+)
 from services.ingestion.app.parsers.factory import (
     DocxParser,
     MarkdownParser,
@@ -325,6 +327,7 @@ class ExactEvidenceEnvelopeTests(unittest.TestCase):
             "parsed_artifact_id": "00000000-0000-4000-8000-000000000005",
             "parsed_status": "ready",
             "parsed_content_sha256": "b" * 64,
+            "parsed_content_text": "A 😀 cafe\u0301 Z",
             "source_object_id": "00000000-0000-4000-8000-000000000006",
             "original_status": "available",
             "original_filename": "proof.txt",
@@ -383,10 +386,50 @@ class ExactEvidenceEnvelopeTests(unittest.TestCase):
 
         self.assertEqual(envelope["resolution_status"], "unavailable")
         self.assertIsNone(envelope["text_target"])
+        with self.assertRaises(EvidenceSelectionError):
+            build_evidence_envelope(
+                self.evidence_row(
+                    text_locator_status="unavailable", text_locator_profile="legacy_unavailable:v0",
+                    text_locator_unavailable_reason="Legacy offsets were synthetic.",
+                ),
+                selection_start=4, selection_end=9, selection_sha256="a" * 64,
+            )
 
     def test_fails_closed_when_resolved_quote_disagrees_with_chunk(self):
         with self.assertRaises(EvidenceIntegrityError):
             build_evidence_envelope(self.evidence_row(resolved_quote="wrong"))
+
+    def test_resolves_digest_bound_subspan_in_unicode_code_points(self):
+        quote = "cafe\u0301"
+        envelope = build_evidence_envelope(
+            self.evidence_row(), selection_start=4, selection_end=9,
+            selection_sha256=hashlib.sha256(quote.encode()).hexdigest(),
+        )
+        self.assertEqual(envelope["schema_version"], 2)
+        self.assertEqual(envelope["text_target"]["selector"][0]["start"], 4)
+        self.assertEqual(envelope["text_target"]["selector"][0]["end"], 9)
+        self.assertEqual(envelope["text_target"]["selector"][1], {
+            "type": "TextQuoteSelector", "exact": quote, "prefix": "A 😀 ", "suffix": " Z",
+        })
+        self.assertEqual(envelope["support_scope"], "requested_source_span_not_claim_verified")
+
+    def test_rejects_incomplete_outside_reversed_or_corrupt_source_selections(self):
+        for start, end, digest in [
+            (4, None, "a" * 64), (None, 9, "a" * 64), (4, 9, None),
+            (0, 9, "a" * 64), (4, 10, "a" * 64), (9, 4, "a" * 64),
+            (4, 4, "a" * 64), (4, 9, "a" * 64), (True, 9, "a" * 64),
+        ]:
+            with self.subTest(start=start, end=end, digest=digest):
+                with self.assertRaises(EvidenceSelectionError):
+                    build_evidence_envelope(
+                        self.evidence_row(), selection_start=start,
+                        selection_end=end, selection_sha256=digest,
+                    )
+        with self.assertRaises(EvidenceIntegrityError):
+            build_evidence_envelope(
+                self.evidence_row(parsed_content_text="different stored artifact"),
+                selection_start=4, selection_end=9, selection_sha256="a" * 64,
+            )
 
 
 class EntityExtractionTests(unittest.TestCase):

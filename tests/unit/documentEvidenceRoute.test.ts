@@ -66,6 +66,35 @@ describe('document evidence gateway route', () => {
     );
   });
 
+  test('forwards only source selectors and preserves an upstream digest rejection', async () => {
+    process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-service-token-32-characters';
+    let upstreamUrl = '';
+    globalThis.fetch = (async (input) => {
+      upstreamUrl = String(input);
+      return Response.json({ detail: 'The source selection digest does not match its exact text.' }, { status: 400 });
+    }) as typeof fetch;
+    const app = Fastify({ logger: false });
+    app.addHook('preHandler', async (request) => {
+      request.user = {
+        userId: 'user-proof', tenantId: 'tenant-proof', roles: ['member'],
+        tokenBudget: 1000, authType: 'session', scopes: [],
+      };
+    });
+    await app.register(documentRoutes);
+    try {
+      const query = new URLSearchParams({ start: '4', end: '9', quote_sha256: 'a'.repeat(64), tenant_id: 'forged' });
+      const response = await app.inject({
+        method: 'GET', url: `/api/documents/document/evidence/chunk?${query}`,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(new URL(upstreamUrl).searchParams.toString()).toBe(
+        new URLSearchParams({ start: '4', end: '9', quote_sha256: 'a'.repeat(64) }).toString(),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   test('forwards the bounded inline disposition for the private PDF viewer', async () => {
     process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-service-token-32-characters';
     let upstreamUrl = '';

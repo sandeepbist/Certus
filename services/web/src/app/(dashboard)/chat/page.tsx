@@ -29,6 +29,7 @@ import {
   type Citation,
 } from '../../../hooks/useStreamingChat';
 import { gatewayFetch } from '@/lib/gateway-client';
+import { documentEvidenceHref } from '@/lib/evidence-link';
 
 interface ScopeDocument {
   id: string;
@@ -598,6 +599,14 @@ function ChatContent() {
                         offsets {span.startChar ?? span.relativeStartChar}–{span.endChar ?? span.relativeEndChar}
                         {' · '}{span.quoteSha256.slice(0, 12)}…
                       </p>
+                      {span.textLocatorStatus === 'exact' && (
+                        <Link
+                          href={documentEvidenceHref(activeCitation, span)}
+                          className="mt-1 inline-flex text-[11px] text-zinc-300 underline decoration-zinc-600 underline-offset-2 hover:text-white"
+                        >
+                          Inspect {span.claimId} source span
+                        </Link>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -639,15 +648,10 @@ function ChatContent() {
                 )}
               </div>
               <Link
-                href={`/documents/${encodeURIComponent(activeCitation.documentId)}?${new URLSearchParams({
-                  ...(activeCitation.versionNumber
-                    ? { version: String(activeCitation.versionNumber) }
-                    : {}),
-                  chunk: activeCitation.chunkId,
-                }).toString()}`}
+                href={documentEvidenceHref(activeCitation)}
                 className="inline-flex text-[11px] text-zinc-300 underline decoration-zinc-600 underline-offset-2 hover:text-white"
               >
-                Inspect evidence
+                Inspect full source chunk
               </Link>
             </div>
           )}
