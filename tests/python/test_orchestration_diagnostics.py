@@ -12,27 +12,20 @@ class OrchestrationDiagnosticBoundaryTests(unittest.TestCase):
 
         with (
             patch.object(
-                graphrag,
-                "get_graph_driver",
+                graphrag.document_graph,
+                "traverse",
                 side_effect=RuntimeError(secret),
             ),
             self.assertLogs("graphrag", level="WARNING") as captured,
+            self.assertRaises(RuntimeError),
         ):
-            result = GraphRAGEngine.traverse_graph(
+            GraphRAGEngine.traverse_graph(
                 ["certus"],
                 "user",
                 "tenant",
             )
 
         diagnostics = "\n".join(captured.output)
-        self.assertEqual(
-            result,
-            {
-                "graph_triples": [],
-                "connected_entities": [],
-                "relationships_count": 0,
-            },
-        )
         self.assertIn("GraphRAG traversal failed (RuntimeError)", diagnostics)
         self.assertNotIn(secret, diagnostics)
         self.assertNotIn("private-password", diagnostics)

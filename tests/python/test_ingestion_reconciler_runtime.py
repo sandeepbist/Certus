@@ -4,11 +4,21 @@ from unittest.mock import Mock, patch
 
 from services.ingestion.app.reconciler_runtime import (
     UploadReconcilerConfig,
+    GraphReconcilerConfig,
     upload_reconciler_is_ready,
 )
 
 
 class UploadReconcilerRuntimeTests(unittest.TestCase):
+    def test_graph_worker_configuration_is_bounded_and_explicit(self):
+        with patch.dict(os.environ, {"GRAPH_RECONCILER_ENABLED":"false",
+            "GRAPH_RECONCILER_POLL_SECONDS":"1","GRAPH_RECONCILER_SHUTDOWN_SECONDS":"300"}):
+            self.assertEqual(GraphReconcilerConfig.from_environment(), GraphReconcilerConfig(False,1,300))
+        for name,value in (("GRAPH_RECONCILER_ENABLED","yes"),("GRAPH_RECONCILER_POLL_SECONDS","0"),
+                           ("GRAPH_RECONCILER_SHUTDOWN_SECONDS","301")):
+            with self.subTest(name=name), patch.dict(os.environ,{name:value}), self.assertRaises(ValueError):
+                GraphReconcilerConfig.from_environment()
+
     def _environment(self, **overrides: str) -> dict[str, str]:
         values = {
             "UPLOAD_RECONCILER_ENABLED": "true",

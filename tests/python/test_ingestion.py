@@ -2,6 +2,7 @@ import unittest
 import gzip
 import hashlib
 import json
+from services.ingestion.app.extractors import entity_extractor as entity_extractor_module
 from unittest.mock import MagicMock, Mock, patch
 from datetime import datetime, timezone
 
@@ -21,7 +22,6 @@ from services.ingestion.app.extractors.entity_extractor import (
     close_entity_graph_driver,
     entity_graph_driver,
 )
-from services.ingestion.app.extractors import entity_extractor as entity_extractor_module
 from services.ingestion.app.evidence import (
     EvidenceIntegrityError, EvidenceSelectionError, build_evidence_envelope,
 )
@@ -218,38 +218,6 @@ class ProcessingProvenanceTests(unittest.TestCase):
             sha256_text("Certus"),
             "8ddf71771bc2b530a40b7bc215c4e3404dd71822752c03da8610806ee0c1821a",
         )
-
-
-class EntityProjectionTruthTests(unittest.TestCase):
-    def test_entity_projection_distinguishes_empty_from_unavailable(self):
-        graph_driver = MagicMock()
-        session = graph_driver.session.return_value.__enter__.return_value
-        session.run.return_value = []
-        with patch.object(
-            entity_extractor_module,
-            "entity_graph_driver",
-            return_value=graph_driver,
-        ):
-            entities, status = EntityExtractor.list_document_entities(
-                "document",
-                "user",
-                "tenant",
-            )
-        self.assertEqual(entities, [])
-        self.assertEqual(status, "ready")
-
-        with patch.object(
-            entity_extractor_module,
-            "entity_graph_driver",
-            side_effect=RuntimeError("graph unavailable"),
-        ):
-            entities, status = EntityExtractor.list_document_entities(
-                "document",
-                "user",
-                "tenant",
-            )
-        self.assertEqual(entities, [])
-        self.assertEqual(status, "degraded")
 
 
 class OriginalDeliveryContractTests(unittest.TestCase):

@@ -205,6 +205,7 @@ class GraphQueryResult(TypedDict):
     connected_entities: List[str]
     relation_types: List[str]
     graph_triples: List[str]
+    projection_status: Literal["ready", "degraded"]
 
 
 @mcp.tool(

@@ -472,6 +472,8 @@ def researcher_node(state: AgentState) -> Dict[str, Any]:
         if use_graph
         else empty_graph
     )
+    if graph_data.get("projection_status") == "degraded":
+        branch_errors["graph"] = "projection_pending"
     memories = result_or_default("memories", []) if use_memories else []
     _raise_if_cancelled(state)
     chunk_dicts = [chunk.to_dict() for chunk in chunks]

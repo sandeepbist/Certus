@@ -7,6 +7,9 @@ FOR (user:User) REQUIRE user.id IS UNIQUE;
 CREATE CONSTRAINT certus_document_id_unique IF NOT EXISTS
 FOR (document:Document) REQUIRE document.id IS UNIQUE;
 
+CREATE CONSTRAINT certus_document_projection_id_unique IF NOT EXISTS
+FOR (document:DocumentProjection) REQUIRE document.id IS UNIQUE;
+
 CREATE CONSTRAINT certus_task_id_unique IF NOT EXISTS
 FOR (task:Task) REQUIRE task.id IS UNIQUE;
 

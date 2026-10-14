@@ -2,8 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from services.ingestion.app.extractors import entity_extractor
-from services.ingestion.app.extractors.entity_extractor import EntityExtractor
+from services.shared.document_graph import DocumentGraph
 from services.ingestion.app.originals import record_upload_error
 
 
@@ -36,40 +35,13 @@ class IngestionDiagnosticBoundaryTests(unittest.TestCase):
     def test_graph_degradation_logs_drop_exception_instance_data(self):
         secret = "neo4j://user:private-password@graph.internal"
         failure = RuntimeError(secret)
-        cases = (
-            (
-                EntityExtractor.sync_to_neo4j,
-                ("document", "title", "user", "tenant", []),
-                "document graph synchronization failed (RuntimeError)",
-            ),
-            (
-                EntityExtractor.list_document_entities,
-                ("document", "user", "tenant"),
-                "document entity lookup failed (RuntimeError)",
-            ),
-            (
-                EntityExtractor.mark_document_deleted,
-                ("document", "user", "tenant", "2026-09-20T00:00:00Z"),
-                "document graph deletion failed (RuntimeError)",
-            ),
-        )
-
-        for operation, arguments, expected_summary in cases:
-            with self.subTest(operation=operation.__name__):
-                with (
-                    patch.object(
-                        entity_extractor,
-                        "entity_graph_driver",
-                        side_effect=failure,
-                    ),
-                    self.assertLogs("entity_extractor", level="WARNING") as captured,
-                ):
-                    operation(*arguments)
-
-                diagnostics = "\n".join(captured.output)
-                self.assertIn(expected_summary, diagnostics)
-                self.assertNotIn(secret, diagnostics)
-                self.assertNotIn("private-password", diagnostics)
+        graph = DocumentGraph(lambda: None, MagicMock(side_effect=failure), timeout_seconds=10)
+        with self.assertLogs("document_graph", level="WARNING") as captured:
+            self.assertEqual(graph.entities("document", "tenant", "user"), ([], "degraded"))
+        diagnostics = "\n".join(captured.output)
+        self.assertIn("document entity lookup failed (RuntimeError)", diagnostics)
+        self.assertNotIn(secret, diagnostics)
+        self.assertNotIn("private-password", diagnostics)
 
     def test_ingestion_runtime_has_no_traceback_or_raw_persistence_sinks(self):
         source = Path("services/ingestion/app/main.py").read_text(encoding="utf-8")

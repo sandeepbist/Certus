@@ -18,6 +18,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
+      neo4j:
+        image: neo4j:5-community@sha256:89d577f2e49606de76441eca8cf7a0fe88e594cbaac4d2a3d86c6e59676e2b1e
+        env:
+          NEO4J_AUTH: neo4j/certus-graph-fixture
+          NEO4J_server_memory_heap_initial__size: 128m
+          NEO4J_server_memory_heap_max__size: 256m
+          NEO4J_server_memory_pagecache_size: 64m
+          NEO4J_dbms_usage__report_enabled: "false"
+        ports:
+          - '7687'
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p certus-graph-fixture 'RETURN 1'"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 15s
       postgres:
         image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
         env:
@@ -91,4 +107,6 @@ jobs:
         env:
           CERTUS_TEST_DATABASE_URL: postgresql://certus_runtime:certus-ci-runtime-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
           CERTUS_TEST_OWNER_DATABASE_URL: postgresql://certus_ci:certus-ci-migration-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
+          CERTUS_TEST_NEO4J_URI: bolt://127.0.0.1:${{ job.services.neo4j.ports['7687'] }}
+          CERTUS_TEST_NEO4J_PASSWORD: certus-graph-fixture
         run: bun run check

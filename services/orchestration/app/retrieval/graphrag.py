@@ -1,10 +1,12 @@
 import os
 import re
 import logging
+from contextlib import contextmanager
 from threading import Lock
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any
 
 from services.shared.safe_errors import safe_error_summary
+from services.shared.document_graph import DocumentGraph
 
 logger = logging.getLogger("graphrag")
 
@@ -68,6 +70,15 @@ def close_graph_driver() -> None:
         driver.close()
 
 
+@contextmanager
+def _graph_database():
+    from ..core.db import get_db_connection
+    with get_db_connection() as connection:
+        yield connection
+
+
+document_graph = DocumentGraph(_graph_database, get_graph_driver, timeout_seconds=NEO4J_QUERY_TIMEOUT_SECONDS)
+
 class GraphRAGEngine:
     @staticmethod
     def extract_query_entities(query: str) -> List[str]:
@@ -86,99 +97,22 @@ class GraphRAGEngine:
 
     @staticmethod
     def traverse_graph(
-        entities: List[str],
-        user_id: str,
-        tenant_id: str,
-        max_depth: int = 2,
+        entities: List[str], user_id: str, tenant_id: str, max_depth: int = 2,
     ) -> Dict[str, Any]:
-        normalized_entities = sorted({entity.casefold().strip() for entity in entities if entity.strip()})
-        if not normalized_entities:
+        if not entities:
             return {"graph_triples": [], "connected_entities": [], "relationships_count": 0}
-
         depth = max(1, min(int(max_depth), 2))
-
         try:
-            triples: List[str] = []
-            connected_set: Set[str] = set()
-            seen_edges: Set[tuple[str, str]] = set()
-
-            with get_graph_driver().session() as session:
-                direct_results = session.run(
-                    bounded_graph_query(
-                        """
-                MATCH (u:User {id: $user_id})-[:OWNS]->(d:Document {tenant_id: $tenant_id})-[:MENTIONS]->(e:Entity {tenant_id: $tenant_id})
-                WHERE d.deleted_at IS NULL
-                  AND e.normalized_name IN $entities
-                MATCH (d)-[:MENTIONS]->(connected:Entity)
-                WHERE connected <> e
-                RETURN e.name AS root_entity,
-                       connected.name AS target_entity,
-                       connected.type AS target_type,
-                       1 AS distance
-                LIMIT 40
-                        """
-                    ),
-                    entities=normalized_entities,
-                    user_id=user_id,
-                    tenant_id=tenant_id,
-                )
-
-                direct_entities: Set[str] = set()
-                for record in direct_results:
-                    root = record["root_entity"]
-                    target = record["target_entity"]
-                    target_type = record["target_type"] or "CONCEPT"
-                    edge = tuple(sorted((root.casefold(), target.casefold())))
-                    if edge in seen_edges:
-                        continue
-                    seen_edges.add(edge)
-                    triples.append(f"({root}) -[CO_MENTIONED]- ({target} [{target_type}])")
-                    connected_set.add(target)
-                    direct_entities.add(target.casefold())
-
-                if depth == 2 and direct_entities:
-                    second_results = session.run(
-                        bounded_graph_query(
-                            """
-                            MATCH (u:User {id: $user_id})-[:OWNS]->(d:Document {tenant_id: $tenant_id})
-                                  -[:MENTIONS]->(middle:Entity {tenant_id: $tenant_id})
-                            WHERE d.deleted_at IS NULL
-                              AND middle.normalized_name IN $middle_entities
-                            MATCH (d)-[:MENTIONS]->(target:Entity {tenant_id: $tenant_id})
-                            WHERE target <> middle
-                            RETURN middle.name AS root_entity,
-                                   target.name AS target_entity,
-                                   target.type AS target_type,
-                                   2 AS distance
-                            LIMIT 40
-                            """
-                        ),
-                        middle_entities=sorted(direct_entities),
-                        user_id=user_id,
-                        tenant_id=tenant_id,
-                    )
-                    for record in second_results:
-                        root = record["root_entity"]
-                        target = record["target_entity"]
-                        target_type = record["target_type"] or "CONCEPT"
-                        if target.casefold() in normalized_entities:
-                            continue
-                        edge = tuple(sorted((root.casefold(), target.casefold())))
-                        if edge in seen_edges:
-                            continue
-                        seen_edges.add(edge)
-                        triples.append(f"({root}) -[CO_MENTIONED]- ({target} [{target_type}])")
-                        connected_set.add(target)
-            
+            projection = document_graph.traverse(entities, tenant_id, user_id, depth)
+            relations = projection.rows
             return {
-                "graph_triples": triples,
-                "connected_entities": list(connected_set),
-                "relationships_count": len(triples),
-                "depth": depth,
+                "graph_triples": [f"({row['root']}) -[CO_MENTIONED]- ({row['target']} [{row['target_type']}])"
+                                  for row in relations],
+                "connected_entities": sorted({row["target"] for row in relations}),
+                "relationships_count": len(relations), "depth": depth,
+                "projection_status": projection.status,
             }
         except Exception as error:
-            logger.warning(
-                "GraphRAG traversal error: %s",
-                safe_error_summary(error, operation="GraphRAG traversal"),
-            )
-            return {"graph_triples": [], "connected_entities": [], "relationships_count": 0}
+            logger.warning("GraphRAG traversal error: %s",
+                           safe_error_summary(error, operation="GraphRAG traversal"))
+            raise
