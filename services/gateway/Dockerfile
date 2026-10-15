@@ -1,6 +1,6 @@
 # Build from the repository root so the committed workspace lockfile is the
 # only dependency authority: docker build -f services/gateway/Dockerfile .
-FROM oven/bun:1.4.2-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f AS dependencies
+FROM oven/bun:1.4.3-alpine@sha256:629e17411f1f129dbec3af78d5af9c9f2a937435c80349437206c6b0b7422373 AS dependencies
 
 WORKDIR /app
 COPY package.json bun.lock bunfig.toml ./
@@ -13,7 +13,7 @@ COPY services/gateway/tsconfig.json ./services/gateway/tsconfig.json
 COPY services/gateway/src/ ./services/gateway/src/
 RUN bun run --filter gateway build
 
-FROM oven/bun:1.4.2-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f AS production-dependencies
+FROM oven/bun:1.4.3-alpine@sha256:629e17411f1f129dbec3af78d5af9c9f2a937435c80349437206c6b0b7422373 AS production-dependencies
 WORKDIR /app
 COPY package.json bun.lock bunfig.toml ./
 COPY services/gateway/package.json ./services/gateway/package.json
