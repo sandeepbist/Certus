@@ -57,10 +57,10 @@ describe('container build contracts', () => {
     const webPackage = readRepositoryFile('services/web/package.json');
     const lock = readRepositoryFile('bun.lock');
 
-    expect(webPackage).toContain('"next": "15.5.24"');
+    expect(webPackage).toContain('"next": "15.5.27"');
     expect(rootPackage).toContain('"postcss": "8.5.26"');
     expect(rootPackage).toContain('"sharp": "0.35.5"');
-    expect(lock).toContain('"next@15.5.24"');
+    expect(lock).toContain('"next@15.5.27"');
     expect(lock).toContain('"postcss@8.5.26"');
     expect(lock).toContain('"sharp@0.35.5"');
     expect(lock).not.toContain('"next@15.5.23"');
