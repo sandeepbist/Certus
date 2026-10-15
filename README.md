@@ -115,7 +115,12 @@ export rather than producing an apparently complete archive.
 The local synchronous path defaults to 32 MiB of original bytes, 256 original
 files, 64 MiB of source JSON, and 100 MiB of compressed ZIP data. A 120-second
 build budget bounds snapshot queries and is checked during downloads and ZIP
-construction; original reads have a five-second inactivity timeout. Failed
+construction. PostgreSQL checks each projected result's row count and JSON byte
+size against the remaining budget before the client downloads that result.
+This includes profile and workspace metadata. These conservative checks share
+the export's repeatable-read snapshot, and Python rechecks the collected data.
+Database scans and sorts still need production load testing. Original reads
+have a five-second inactivity timeout. Failed
 builds save no archive. Downloads require the same tenant and user and expire
 after 48 hours. Large asynchronous archives and direct workspace restore are
 not implemented yet. See `.env.example` for the configurable limits.
