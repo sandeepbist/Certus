@@ -26,7 +26,7 @@ EXPORT_SCHEMA_VERSION = 13
 
 
 class _BudgetedExportCursor:
-    """Apply collection limits while retaining the cursor API used below."""
+    """Admit projected SQL bytes and rows before a client cursor buffers data."""
 
     def __init__(self, cursor, budget: ExportCollectionBudget, deadline: float | None = None):
         self._cursor = cursor
@@ -44,8 +44,25 @@ class _BudgetedExportCursor:
             )
         return self._cursor.execute(query, params)
 
-    def fetchone(self):
-        return self._cursor.fetchone()
+    def collect(self, query: str, params: tuple) -> list:
+        remaining_records = self._budget.max_records - self._budget.records
+        remaining_bytes = self._budget.max_source_bytes - self._budget.source_bytes
+        # Queries are repository-owned SELECTs; user values remain bound params.
+        # REPEATABLE READ keeps this measurement and the payload identical.
+        # row_to_json measures detoasted values, unlike pg_column_size on TOAST.
+        self.execute(
+            f"""SELECT COUNT(*) AS record_count,
+                       COALESCE(SUM(octet_length(row_to_json(export_admission)::text)), 0) AS source_bytes
+                FROM (SELECT * FROM ({query}) AS export_source LIMIT %s) AS export_admission""",
+            (*params, remaining_records + 1),
+        )
+        measured = self._cursor.fetchone()
+        if measured["record_count"] > remaining_records:
+            raise ExportArchiveLimitExceeded("Export record count exceeds the configured synchronous limit")
+        if measured["source_bytes"] > remaining_bytes:
+            raise ExportArchiveLimitExceeded("Export source data exceeds the configured synchronous byte limit")
+        self.execute(query, params)
+        return self.fetchall()
 
     def fetchall(self) -> list:
         rows = []
@@ -77,18 +94,16 @@ def _configure_export_transaction(cursor, identity: RequestIdentity) -> None:
         )
 
 
-def _rows(cursor, query: str, params: tuple) -> list[dict]:
-    cursor.execute(query, params)
-    return [dict(row) for row in cursor.fetchall()]
+def _rows(cursor: _BudgetedExportCursor, query: str, params: tuple) -> list[dict]:
+    return [dict(row) for row in cursor.collect(query, params)]
 
 
-def _row(cursor, query: str, params: tuple) -> dict | None:
-    cursor.execute(query, params)
-    value = cursor.fetchone()
-    return dict(value) if value else None
+def _row(cursor: _BudgetedExportCursor, query: str, params: tuple) -> dict | None:
+    rows = _rows(cursor, query, params)
+    return rows[0] if rows else None
 
 
-def _collect_export_data(cursor, identity: RequestIdentity) -> dict:
+def _collect_export_data(cursor: _BudgetedExportCursor, identity: RequestIdentity) -> dict:
     set_db_request_context(cursor, identity)
     tenant_user = (identity.tenant_id, identity.user_id)
     user_tenant = (identity.user_id, identity.tenant_id)
@@ -729,8 +744,7 @@ def download_data_export(
 ):
     now = datetime.now(timezone.utc)
     with get_db_cursor() as cursor:
-        export = _row(
-            cursor,
+        cursor.execute(
             """
             SELECT id, status, format, file_name, archive, expires_at
             FROM data_exports
@@ -739,6 +753,8 @@ def download_data_export(
             """,
             (str(export_id), identity.tenant_id, identity.user_id),
         )
+        row = cursor.fetchone()
+        export = dict(row) if row else None
         if not export:
             raise HTTPException(status_code=404, detail="Export not found")
         if export["expires_at"] <= now:

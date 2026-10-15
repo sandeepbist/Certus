@@ -31,6 +31,10 @@ class ExportCursor:
     def fetchone(self):
         return None
 
+    def collect(self, statement, params):
+        self.execute(statement, params)
+        return self.fetchall()
+
     def fetchall(self):
         if "FROM workspace_embedding_generations" in self.current:
             return [{

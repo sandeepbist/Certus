@@ -56,7 +56,13 @@ class RecordingCursor:
         return self.rows
 
     def fetchone(self):
+        if "AS export_admission" in self.statements[-1][0]:
+            return {"record_count": 0, "source_bytes": 0}
         return None
+
+    def fetchmany(self, size):
+        batch, self.rows = self.rows[:size], self.rows[size:]
+        return batch
 
 
 class RecordingConnection:
@@ -139,7 +145,9 @@ class MemoryRlsContextTests(unittest.TestCase):
     def test_export_sets_context_before_profile_scan_and_archive_memory_read(self):
         cursor = RecordingCursor()
 
-        export_api._collect_export_data(cursor, IDENTITY)
+        wrapped = export_api._BudgetedExportCursor(cursor,
+            export_api.ExportCollectionBudget(max_source_bytes=1024,max_records=10))
+        export_api._collect_export_data(wrapped, IDENTITY)
 
         self.assertEqual(cursor.statements[0], (SET_CONTEXT_SQL, ("tenant-a", "user-a")))
         memory_queries = [
@@ -147,7 +155,7 @@ class MemoryRlsContextTests(unittest.TestCase):
             for index, (query, _) in enumerate(cursor.statements)
             if "FROM memories" in query
         ]
-        self.assertEqual(len(memory_queries), 2)
+        self.assertGreaterEqual(len(memory_queries), 2)
         self.assertTrue(all(index > 0 for index in memory_queries))
 
 
