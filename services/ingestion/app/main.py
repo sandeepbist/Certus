@@ -5,7 +5,7 @@ import sys
 import json
 import logging
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from secrets import compare_digest
@@ -31,7 +31,9 @@ load_dotenv(REPOSITORY_ROOT / ".env")
 
 from app.parsers.factory import ParserFactory, ParserException
 from app.chunking.chunker import ChunkerFactory, trim_text_span
-from app.extractors.entity_extractor import EntityExtractor, close_entity_graph_driver
+from app.extractors.entity_extractor import (
+    EntityExtractor, NEO4J_QUERY_TIMEOUT_SECONDS, close_entity_graph_driver, entity_graph_driver,
+)
 from app.evidence import (
     EXACT_TEXT_LOCATOR_PROFILE,
     EvidenceIntegrityError,
@@ -47,9 +49,10 @@ from app.processing import (
     sha256_text,
 )
 from app.pdf_layout import LAYOUT_CONTENT_ENCODING, LAYOUT_MIME_TYPE
-from app.reconciler_runtime import UploadReconcilerConfig, upload_reconciler_is_ready
+from app.reconciler_runtime import GraphReconcilerConfig, UploadReconcilerConfig, upload_reconciler_is_ready
 
 from services.shared.admission import AdmissionCapacityExceeded, AsyncAdmissionController
+from services.shared.document_graph import DocumentGraph
 from services.shared.embeddings import configured_embedding_profile
 from services.shared.embedding_registry import register_embedding_profile
 from services.shared.http_runtime import (
@@ -95,40 +98,51 @@ from app.originals import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ingestion_service")
 UPLOAD_RECONCILER_CONFIG = UploadReconcilerConfig.from_environment()
+GRAPH_RECONCILER_CONFIG = GraphReconcilerConfig.from_environment()
 _upload_reconciler_worker: Optional[Thread] = None
+_graph_reconciler_worker: Optional[Thread] = None
 
 
 @asynccontextmanager
 async def application_lifespan(_application: FastAPI):
-    global _upload_reconciler_worker
-    stop_event: Optional[Event] = None
-    worker: Optional[Thread] = None
-    if UPLOAD_RECONCILER_CONFIG.enabled:
-        stop_event = Event()
-        worker = Thread(
-            target=_run_upload_reconciler,
-            args=(stop_event,),
-            name="certus-upload-reconciler",
-            daemon=True,
-        )
-        _upload_reconciler_worker = worker
-        worker.start()
+    global _upload_reconciler_worker, _graph_reconciler_worker
+    workers = []
     try:
+        if UPLOAD_RECONCILER_CONFIG.enabled:
+            stop_event = Event()
+            worker = Thread(
+                target=_run_upload_reconciler,
+                args=(stop_event,),
+                name="certus-upload-reconciler",
+                daemon=True,
+            )
+            _upload_reconciler_worker = worker
+            worker.start()
+            workers.append(("Upload", stop_event, worker, UPLOAD_RECONCILER_CONFIG.shutdown_seconds))
+        if GRAPH_RECONCILER_CONFIG.enabled:
+            stop_event = Event()
+            worker = Thread(target=_run_graph_reconciler, args=(stop_event,),
+                            name="certus-graph-reconciler", daemon=True)
+            _graph_reconciler_worker = worker
+            worker.start()
+            workers.append(("Graph", stop_event, worker, GRAPH_RECONCILER_CONFIG.shutdown_seconds))
         yield
     finally:
         worker_stopped = True
-        if stop_event is not None and worker is not None:
+        for _, stop_event, _, _ in workers:
             stop_event.set()
-            shutdown_seconds = UPLOAD_RECONCILER_CONFIG.shutdown_seconds
+        for name, _, worker, shutdown_seconds in workers:
             await asyncio.to_thread(worker.join, shutdown_seconds)
-            worker_stopped = not worker.is_alive()
-            if not worker_stopped:
+            if worker.is_alive():
+                worker_stopped = False
                 logger.warning(
-                    "Upload reconciler did not stop within %s seconds; durable upload intent remains recoverable",
+                    "%s reconciler did not stop within %s seconds; durable work remains recoverable",
+                    name,
                     shutdown_seconds,
                 )
         if worker_stopped:
             _upload_reconciler_worker = None
+            _graph_reconciler_worker = None
             for resource_name, close_resource in (
                 ("Neo4j", close_entity_graph_driver),
                 ("original storage", close_original_storage),
@@ -185,14 +199,41 @@ async def require_internal_service_token(request: Request, call_next):
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 
+@contextmanager
 def get_db():
-    return connect_database(
+    with closing(connect_database(
         DATABASE_URL,
         application_name="certus-ingestion",
         connect_timeout_seconds=DATABASE_CONNECT_TIMEOUT_SECONDS,
         statement_timeout_ms=DATABASE_STATEMENT_TIMEOUT_MS,
         lock_timeout_ms=DATABASE_LOCK_TIMEOUT_MS,
+    )) as connection, connection:
+        yield connection
+
+
+document_graph = DocumentGraph(get_db, entity_graph_driver,
+                              timeout_seconds=NEO4J_QUERY_TIMEOUT_SECONDS)
+
+
+def _run_graph_reconciler(stop_event: Event) -> None:
+    while not stop_event.is_set():
+        try:
+            if document_graph.reconcile_once():
+                continue
+        except Exception as error:
+            logger.warning("%s", safe_error_summary(error, operation="graph reconciler"))
+        stop_event.wait(GRAPH_RECONCILER_CONFIG.poll_seconds)
+
+
+def _graph_repair_health():
+    worker = "disabled" if not GRAPH_RECONCILER_CONFIG.enabled else (
+        "ready" if _graph_reconciler_worker and _graph_reconciler_worker.is_alive() else "not_ready"
     )
+    try:
+        return {"worker": worker, "queue": document_graph.health()}
+    except Exception as error:
+        logger.warning("%s", safe_error_summary(error, operation="graph queue health"))
+        return {"worker": worker, "queue": "unavailable"}
 
 
 async def acquire_processing_capacity() -> AsyncIterator[None]:
@@ -329,9 +370,10 @@ def _original_storage_is_ready() -> bool:
 
 @app.get("/health/ready")
 async def readiness_check():
-    database_ready, storage_ready = await asyncio.gather(
+    database_ready, storage_ready, graph_health = await asyncio.gather(
         asyncio.to_thread(_database_is_ready),
         asyncio.to_thread(_original_storage_is_ready),
+        asyncio.to_thread(_graph_repair_health),
     )
     dependencies = {
         "postgresql": "ready" if database_ready else "not_ready",
@@ -352,6 +394,7 @@ async def readiness_check():
             "status": "ready" if ready else "not_ready",
             "service": "ingestion",
             "dependencies": dependencies,
+            "capabilities": {"document_graph_repair": graph_health},
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -1178,9 +1221,7 @@ def ingest_document(
                     (upload_intent.id, json.dumps(response_payload)),
                 )
 
-        # 6. Sync the knowledge graph only after chunks and both outbox records
-        # commit. A graph outage degrades traversal without losing retrieval work.
-        EntityExtractor.sync_to_neo4j(doc_id, source_title, user_id, tenant_id, entities)
+        # The document trigger durably queued graph repair in this transaction.
 
         logger.info("Ingested document %s: %s chunks staged durably.", doc_id, len(all_chunks))
 
@@ -1583,11 +1624,7 @@ def get_document_details(
             )
             versions = cursor.fetchall()
 
-    entities, entities_status = EntityExtractor.list_document_entities(
-        document_id,
-        user_id,
-        tenant_id,
-    )
+    entities, entities_status = document_graph.entities(document_id, tenant_id, user_id)
     return {
         "document": dict(doc),
         "chunks": [dict(c) for c in chunks],
@@ -2198,17 +2235,11 @@ def delete_document(
                 (document_id, tenant_id, user_id),
             )
 
-    graph_sync = EntityExtractor.mark_document_deleted(
-        document_id,
-        user_id,
-        tenant_id,
-        deleted_at.isoformat(),
-    )
     return {
         "document_id": document_id,
         "status": "deleted",
         "deleted_at": deleted_at.isoformat(),
-        "graph_sync": graph_sync,
+        "graph_sync": "pending",
     }
 
 
@@ -2356,16 +2387,10 @@ def restore_document(
             ) from error
         raise
 
-    graph_sync = EntityExtractor.restore_document(
-        document_id,
-        user_id,
-        tenant_id,
-        int(restored["entity_count"] or 0),
-    )
     return {
         "document_id": str(restored["id"]),
         "status": restored["status"],
-        "graph_sync": graph_sync,
+        "graph_sync": "pending",
     }
 
 if __name__ == "__main__":

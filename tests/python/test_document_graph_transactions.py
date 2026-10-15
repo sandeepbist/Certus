@@ -1,72 +1,50 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timezone
+from uuid import uuid4
 
-from services.ingestion.app.extractors import entity_extractor
-from services.ingestion.app.extractors.entity_extractor import EntityExtractor, ExtractedEntity
+from services.shared.document_graph import EntitySnapshot, UnavailableSnapshot, _target_from_row, _token
 
 
-class DocumentGraphTransactionTests(unittest.TestCase):
-    operations = (
-        (EntityExtractor.sync_to_neo4j,
-         ("document", "title", "user", "tenant", [ExtractedEntity("PostgreSQL", "TECHNOLOGY")]), 4),
-        (EntityExtractor.mark_document_deleted,
-         ("document", "user", "tenant", "2026-10-09T00:00:00Z"), 2),
-        (EntityExtractor.restore_document, ("document", "user", "tenant", 1), 2),
-    )
+class DocumentGraphSnapshotTests(unittest.TestCase):
+    def row(self, entities):
+        document_id, version_id = uuid4(), uuid4()
+        return {"document_id": document_id, "current_version_id": version_id,
+                "tenant_id": "tenant", "user_id": "user", "revision": 1,
+                "title": "Proof", "created_at": datetime.now(timezone.utc), "deleted_at": None,
+                "entity_count": len(entities) if isinstance(entities, list) else 1,
+                "source_payload": {"document_id": str(document_id), "document_version_id": str(version_id),
+                                   "entity_count": len(entities) if isinstance(entities, list) else 1,
+                                   "entities": entities}}
 
-    def driver(self):
-        driver = MagicMock()
-        session = driver.session.return_value.__enter__.return_value
-        context = session.begin_transaction.return_value
-        transaction = context.__enter__.return_value
-        transaction.run.return_value.single.return_value = {"existed": True, "has_mentions": True}
-        return driver, session, context, transaction
+    def test_empty_is_available_but_missing_malformed_and_wrong_version_are_unavailable(self):
+        self.assertEqual(_target_from_row(self.row([])).snapshot, EntitySnapshot(()))
+        for entities in (None, {}, [{"name": "Proof", "type": "CONCEPT", "mention_count": True}],
+                         [{"name": "Proof", "type": "CONCEPT", "mention_count": 0}],
+                         [{"name": "x" * 513, "type": "CONCEPT", "mention_count": 1}]):
+            with self.subTest(entities=entities):
+                self.assertIsInstance(_target_from_row(self.row(entities)).snapshot, UnavailableSnapshot)
+        row = self.row([])
+        row["source_payload"]["document_version_id"] = str(uuid4())
+        self.assertIsInstance(_target_from_row(row).snapshot, UnavailableSnapshot)
+        row = self.row([])
+        del row["source_payload"]["entities"]
+        self.assertIsInstance(_target_from_row(row).snapshot, UnavailableSnapshot)
 
-    def test_lifecycle_commits_only_after_all_writes_in_one_bounded_transaction(self):
-        for operation, arguments, query_count in self.operations:
-            with self.subTest(operation=operation.__name__):
-                driver, session, context, transaction = self.driver()
-                with patch.object(entity_extractor, "entity_graph_driver", return_value=driver):
-                    result = operation(*arguments)
+    def test_duplicate_normalized_entities_are_rejected_and_snapshots_are_immutable(self):
+        entity = {"name": "Straße", "type": "CONCEPT", "mention_count": 2}
+        row = self.row([entity, {**entity, "name": "STRASSE"}])
+        self.assertIsInstance(_target_from_row(row).snapshot, UnavailableSnapshot)
+        row = self.row([entity])
+        target = _target_from_row(row)
+        entity["name"] = "changed input"
+        self.assertEqual(target.snapshot.entities[0].name, "Straße")
 
-                session.run.assert_not_called()
-                session.begin_transaction.assert_called_once_with(
-                    timeout=entity_extractor.NEO4J_QUERY_TIMEOUT_SECONDS,
-                )
-                self.assertEqual(transaction.run.call_count, query_count)
-                transaction.commit.assert_called_once_with()
-                self.assertEqual(transaction.method_calls[-1][0], "commit")
-                context.__exit__.assert_called_once_with(None, None, None)
-                if operation != EntityExtractor.sync_to_neo4j:
-                    self.assertEqual(result, "synced")
-
-    def test_every_query_and_commit_failure_closes_transaction_and_reports_degradation(self):
-        for operation, arguments, query_count in self.operations:
-            for failure_index in range(query_count + 1):
-                with self.subTest(operation=operation.__name__, failure_index=failure_index):
-                    driver, session, context, transaction = self.driver()
-                    failure = RuntimeError("private graph connection details")
-                    if failure_index < query_count:
-                        result = transaction.run.return_value
-                        transaction.run.side_effect = [result] * failure_index + [failure]
-                    else:
-                        transaction.commit.side_effect = failure
-
-                    with (
-                        patch.object(entity_extractor, "entity_graph_driver", return_value=driver),
-                        self.assertLogs("entity_extractor", level="WARNING") as captured,
-                    ):
-                        result = operation(*arguments)
-
-                    session.run.assert_not_called()
-                    if failure_index < query_count:
-                        transaction.commit.assert_not_called()
-                    else:
-                        transaction.commit.assert_called_once_with()
-                    self.assertIs(context.__exit__.call_args.args[1], failure)
-                    self.assertNotIn("private graph connection details", "\n".join(captured.output))
-                    if operation != EntityExtractor.sync_to_neo4j:
-                        self.assertEqual(result, "degraded")
+    def test_unstamped_or_invalid_projection_rows_have_no_authorization_token(self):
+        row = {"document_id": str(uuid4()), "document_version_id": str(uuid4()), "graph_revision": 1}
+        self.assertIsNotNone(_token(row))
+        for value in (None, True, 0, "1"):
+            self.assertIsNone(_token({**row, "graph_revision": value}))
+        self.assertIsNone(_token({**row, "document_id": "not-a-uuid"}))
 
 
 if __name__ == "__main__":

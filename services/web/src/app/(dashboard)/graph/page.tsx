@@ -46,6 +46,7 @@ interface GraphResponse {
   links?: GraphLink[];
   stats?: { nodes: number; links: number; entities: number; documents: number };
   truncated?: boolean;
+  projection_status?: 'ready' | 'degraded';
   detail?: string;
   message?: string;
 }
@@ -100,6 +101,7 @@ function GraphContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
+  const [projectionStatus, setProjectionStatus] = useState<'ready' | 'degraded'>('ready');
   const [stats, setStats] = useState({ nodes: 0, links: 0, entities: 0, documents: 0 });
   const [refreshKey, setRefreshKey] = useState(0);
   const [copiedQuery, setCopiedQuery] = useState(false);
@@ -120,6 +122,7 @@ function GraphContent() {
         setLinks(data.links || []);
         setStats(data.stats || { nodes: positioned.length, links: 0, entities: 0, documents: 0 });
         setTruncated(Boolean(data.truncated));
+        setProjectionStatus(data.projection_status ?? 'ready');
         setSelectedNode((current) => positioned.find((node) => node.id === current?.id) || positioned[0] || null);
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -189,9 +192,9 @@ function GraphContent() {
     setPan({ x: 0, y: 0 });
   };
 
-  const cypherExample = `MATCH (entity:Entity {tenant_id: $tenantId, normalized_name: $normalizedName})\nMATCH (document:Document)-[:MENTIONS]->(entity)\nWHERE document.deleted_at IS NULL\nRETURN document, entity LIMIT 25;`;
-  const copyCypher = async () => {
-    await navigator.clipboard.writeText(cypherExample);
+  const graphApiExample = `/api/gateway/graph?query=${encodeURIComponent(selectedNode?.name ?? "")}&depth=2&limit=200`;
+  const copyGraphApi = async () => {
+    await navigator.clipboard.writeText(graphApiExample);
     setCopiedQuery(true);
     window.setTimeout(() => setCopiedQuery(false), 2000);
   };
@@ -260,6 +263,11 @@ function GraphContent() {
           This view reached the 200-node safety limit. Search for an entity to focus the graph.
         </div>
       )}
+      {!loadError && projectionStatus === 'degraded' && (
+        <div role="status" className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-300">
+          Some document entities are waiting for graph repair. Refresh to check progress.
+        </div>
+      )}
 
       <div className="relative flex min-h-0 flex-1 gap-4">
         <div
@@ -277,7 +285,7 @@ function GraphContent() {
           {isLoading && nodes.length === 0 && <div className="absolute inset-0 grid place-items-center text-xs text-zinc-500">Loading workspace graph...</div>}
           {!isLoading && !loadError && nodes.length === 0 && (
             <div className="absolute inset-0 grid place-items-center px-6 text-center text-xs text-zinc-500">
-              {searchQuery ? 'No graph nodes match this search.' : 'Upload documents to extract entities and build the graph.'}
+              {projectionStatus === 'degraded' ? 'Document entities are waiting for graph repair.' : searchQuery ? 'No graph nodes match this search.' : 'Upload documents to extract entities and build the graph.'}
             </div>
           )}
           <div
@@ -367,12 +375,12 @@ function GraphContent() {
               </div>
               <div className="space-y-1.5 border-t border-zinc-800 pt-3">
                 <div className="flex items-center justify-between text-xs text-zinc-300">
-                  <span>Parameterized Cypher</span>
-                  <button type="button" onClick={copyCypher} className="flex items-center gap-1 text-[11px] text-zinc-500 hover:text-white">
+                  <span>Authenticated graph API</span>
+                  <button type="button" onClick={copyGraphApi} className="flex items-center gap-1 text-[11px] text-zinc-500 hover:text-white">
                     {copiedQuery ? <><Check className="h-3 w-3 text-emerald-400" />Copied</> : <><Copy className="h-3 w-3" />Copy</>}
                   </button>
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-[10px] leading-relaxed text-zinc-400">{cypherExample}</pre>
+                <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-zinc-800 bg-zinc-900 p-3 text-[10px] leading-relaxed text-zinc-400">{graphApiExample}</pre>
               </div>
             </div>
           ) : (

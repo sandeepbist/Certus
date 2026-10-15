@@ -11,7 +11,6 @@ import psycopg2
 from fastapi import HTTPException
 
 from services.ingestion.app import main as ingestion_main
-from services.ingestion.app.extractors import entity_extractor
 
 
 DOCUMENT_ID = "00000000-0000-4000-8000-000000000001"
@@ -109,11 +108,7 @@ class DocumentRestoreTests(unittest.TestCase):
         def capture_job_rows(_cursor, _query, rows, **_kwargs):
             store.inserted_job_rows.extend(rows)
 
-        with patch.object(ingestion_main, "get_db", side_effect=store.connection), patch.object(
-            ingestion_main.EntityExtractor,
-            "restore_document",
-            return_value="synced",
-        ) as sync, patch.object(
+        with patch.object(ingestion_main, "get_db", side_effect=store.connection), patch.object(ingestion_main, "document_graph") as sync, patch.object(
             ingestion_main,
             "execute_values",
             side_effect=capture_job_rows,
@@ -131,16 +126,11 @@ class DocumentRestoreTests(unittest.TestCase):
         result, sync, insert_jobs = self.call_restore(store)
 
         self.assertEqual(result["status"], "ready")
-        self.assertEqual(result["graph_sync"], "synced")
+        self.assertEqual(result["graph_sync"], "pending")
         self.assertFalse(store.deleted)
         self.assertEqual(store.commits, 1)
         self.assertEqual(store.rollbacks, 0)
-        sync.assert_called_once_with(
-            DOCUMENT_ID,
-            "user-a",
-            "tenant-a",
-            0,
-        )
+        sync.reconcile_once.assert_not_called()
         insert_jobs.assert_not_called()
         document_read = store.statements[1]
         self.assertIn("document.tenant_id = %s AND document.user_id = %s", document_read[0])
@@ -270,67 +260,6 @@ class ArchivedDocumentListTests(unittest.TestCase):
         self.assertIn("document.user_id = %s", connection.statement)
         self.assertIn("document.deleted_at IS NOT NULL", connection.statement)
         self.assertEqual(tuple(connection.params[:2]), ("tenant-other", "user-other"))
-
-
-class GraphRestoreTests(unittest.TestCase):
-    def run_restore(self, record):
-        class Result:
-            def single(self):
-                return record
-
-            def consume(self):
-                return None
-
-        class Session:
-            def __init__(self):
-                self.queries = []
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return None
-
-            def begin_transaction(self, **_kwargs):
-                return self
-
-            def commit(self):
-                return None
-
-            def run(self, query, **_params):
-                self.queries.append(query)
-                return Result()
-
-        class Driver:
-            def __init__(self):
-                self.opened_session = Session()
-
-            def session(self):
-                return self.opened_session
-
-        driver = Driver()
-        with patch.object(entity_extractor, "entity_graph_driver", return_value=driver):
-            result = entity_extractor.EntityExtractor.restore_document(
-                DOCUMENT_ID,
-                "user-a",
-                "tenant-a",
-                expected_entity_count=1,
-            )
-        return result, driver.opened_session.queries
-
-    def test_graph_restore_refuses_cross_tenant_owner_and_reports_degraded(self):
-        result, queries = self.run_restore(None)
-
-        self.assertEqual(result, "degraded")
-        self.assertIn("existing.tenant_id = $tenant_id", queries[0])
-        self.assertIn("other.id <> $user_id", queries[0])
-        self.assertNotIn("SET document.tenant_id = $tenant_id", queries[0])
-
-    def test_graph_restore_reports_missing_mentions_as_degraded(self):
-        result, queries = self.run_restore({"existed": True, "has_mentions": False})
-
-        self.assertEqual(result, "degraded")
-        self.assertIn("-[:MENTIONS]->", queries[0])
 
 
 if __name__ == "__main__":

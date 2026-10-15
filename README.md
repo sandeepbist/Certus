@@ -186,6 +186,16 @@ The release step verifies a real password login and needs a PostgreSQL 16+ clien
 
 For an existing deployment, roll out the application version that sets transaction-local tenant/user context for memory queries, then drain older application instances before applying migration `070_memory_row_security.sql`. That migration rejects inconsistent legacy memory references and enables a `memories`-only row-security policy; queries from older instances without context will see no memory rows. The shared runtime role can set its own context, so this policy guards against accidental unscoped SQL, not a compromised application credential.
 
+### Durable document graph repair
+
+Upload, replacement, delete, and restore commit their graph repair target with the document change in PostgreSQL. The ingestion worker publishes that target to Neo4j asynchronously, without parsing again or calling paid providers. Delete and restore return `graph_sync: "pending"`; this confirms durable scheduling, not completed graph publication. Completed upload responses remain unchanged on idempotent replay.
+
+Document entity lookups report `ready` or `degraded`. The workspace graph, GraphRAG, and MCP graph queries expose `projection_status` with the same values. Pending or blocked current documents make that workspace degraded; available current documents can still contribute authorized results. Graph readers validate document ownership, current version, deletion state, and acknowledged revision in PostgreSQL after graph retrieval. They exclude stale and deleted projections immediately, including both sources of a two-hop traversal. SQL or Neo4j failure produces an unavailable graph API/tool or a degraded retrieval branch, rather than a successful empty lookup.
+
+For an existing deployment, apply migration `071_document_graph_reconciliation.sql` and the Neo4j schema, including `certus_document_projection_id_unique`, before deploying this application version. Deploy every graph reader, including orchestration and MCP, and drain older reader replicas before relying on the new visibility rules. New workers use the separate `DocumentProjection` label; legacy writers cannot overwrite those projections. Keep `GRAPH_RECONCILER_ENABLED=false` during a coordinated rollout if workers must wait for readers to finish draining, then enable repair on ingestion replicas. Never roll back to legacy readers while depending on SQL visibility gates.
+
+Repair reuses each retained version's immutable completed upload response. Historical versions without a valid bounded entity snapshot remain degraded and blocked for operator repair; the worker never guesses that missing entities mean an empty graph. Exact empty snapshots are valid. Ownership or digest conflicts also block until repaired; transient outages retry with bounded exponential backoff and jitter. Ingestion `/health/ready` reports `document_graph_repair` separately from core upload readiness, including pending work, blocked work in the bounded sample, and oldest pending age. Worker polling and shutdown bounds are documented in `.env.example`.
+
 ## Development
 
 ### Common commands
@@ -206,6 +216,8 @@ Run the full repository gate before opening a pull request:
 ```bash
 make check
 ```
+
+The graph integration tests run when `CERTUS_TEST_DATABASE_URL`, `CERTUS_TEST_NEO4J_URI`, and `CERTUS_TEST_NEO4J_PASSWORD` point to disposable migrated PostgreSQL and Neo4j fixtures. Use a separate `CERTUS_TEST_OWNER_DATABASE_URL` for migration and privilege checks. CI provisions both databases and runs these checks, including outage recovery, concurrent lifecycle changes, lease fencing, and current-version visibility. The graph tests use an in-memory source byte adapter; object-storage integration is verified separately.
 
 For optimized application builds:
 

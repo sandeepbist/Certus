@@ -47,6 +47,21 @@ class UploadReconcilerConfig:
         )
 
 
+@dataclass(frozen=True)
+class GraphReconcilerConfig:
+    enabled: bool
+    poll_seconds: int
+    shutdown_seconds: int
+
+    @classmethod
+    def from_environment(cls) -> "GraphReconcilerConfig":
+        return cls(
+            enabled=_strict_boolean_env("GRAPH_RECONCILER_ENABLED", True),
+            poll_seconds=bounded_int_env("GRAPH_RECONCILER_POLL_SECONDS", 5, 1, 300),
+            shutdown_seconds=bounded_int_env("GRAPH_RECONCILER_SHUTDOWN_SECONDS", 30, 1, 300),
+        )
+
+
 def upload_reconciler_is_ready(
     config: UploadReconcilerConfig,
     worker: ThreadState | None,

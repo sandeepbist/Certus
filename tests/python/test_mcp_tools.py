@@ -256,6 +256,8 @@ class MCPToolContractTests(unittest.TestCase):
         self.assertNotIn("result", by_name["search_notes"].output_schema["properties"])
         self.assertTrue(by_name["search_notes"].annotations.read_only_hint)
         self.assertFalse(by_name["create_task"].annotations.read_only_hint)
+        self.assertEqual(by_name["graph_query"].output_schema["properties"]["projection_status"]["enum"],
+                         ["ready", "degraded"])
 
     def test_tag_normalization_is_bounded_and_deduplicated(self):
         self.assertEqual(normalize_tags([" Urgent ", "urgent", "Audit"]), ["urgent", "audit"])

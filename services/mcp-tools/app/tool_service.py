@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import uuid
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
@@ -14,6 +15,7 @@ from psycopg2.extras import RealDictCursor
 from temporalio.client import Client
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 from services.shared.safe_errors import safe_error_summary
+from services.shared.document_graph import DocumentGraph
 from services.shared.worker_runtime import configured_database_url
 
 
@@ -170,6 +172,16 @@ def database_connection():
             f"-c lock_timeout={DB_LOCK_TIMEOUT_MS}"
         ),
     )
+
+
+@contextmanager
+def _graph_database():
+    with closing(database_connection()) as connection, connection:
+        yield connection
+
+
+document_graph = DocumentGraph(_graph_database, graph_driver,
+                              timeout_seconds=NEO4J_QUERY_TIMEOUT_SECONDS)
 
 
 def database_is_ready() -> bool:
@@ -718,69 +730,11 @@ def graph_query(
     traversal_depth = max(1, min(int(depth), 2))
 
     try:
-        triples: List[str] = []
-        connected: set[str] = set()
-        seen_edges: set[tuple[str, str]] = set()
-        with graph_driver().session() as session:
-            direct_results = session.run(
-                Query(
-                    """
-                    MATCH (user:User {id: $user_id})-[:OWNS]->(document:Document {tenant_id: $tenant_id})
-                          -[:MENTIONS]->(root:Entity {tenant_id: $tenant_id, normalized_name: $normalized_name})
-                    WHERE document.deleted_at IS NULL
-                    MATCH (document)-[:MENTIONS]->(target:Entity {tenant_id: $tenant_id})
-                    WHERE target <> root
-                    RETURN root.name AS root, target.name AS target
-                    LIMIT 40
-                    """,
-                    timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                ),
-                normalized_name=clean_entity_name.casefold(),
-                user_id=identity.user_id,
-                tenant_id=identity.tenant_id,
-            )
-            middle_entities: set[str] = set()
-            for record in direct_results:
-                root = record["root"]
-                target = record["target"]
-                edge = tuple(sorted((root.casefold(), target.casefold())))
-                if edge in seen_edges:
-                    continue
-                seen_edges.add(edge)
-                triples.append(f"({root}) -[CO_MENTIONED]- ({target})")
-                connected.add(target)
-                middle_entities.add(target.casefold())
-
-            if traversal_depth == 2 and middle_entities:
-                second_results = session.run(
-                    Query(
-                        """
-                        MATCH (user:User {id: $user_id})-[:OWNS]->(document:Document {tenant_id: $tenant_id})
-                              -[:MENTIONS]->(root:Entity {tenant_id: $tenant_id})
-                        WHERE document.deleted_at IS NULL
-                          AND root.normalized_name IN $middle_entities
-                        MATCH (document)-[:MENTIONS]->(target:Entity {tenant_id: $tenant_id})
-                        WHERE target <> root
-                        RETURN root.name AS root, target.name AS target
-                        LIMIT 40
-                        """,
-                        timeout=NEO4J_QUERY_TIMEOUT_SECONDS,
-                    ),
-                    middle_entities=sorted(middle_entities),
-                    user_id=identity.user_id,
-                    tenant_id=identity.tenant_id,
-                )
-                for record in second_results:
-                    root = record["root"]
-                    target = record["target"]
-                    if target.casefold() == clean_entity_name.casefold():
-                        continue
-                    edge = tuple(sorted((root.casefold(), target.casefold())))
-                    if edge in seen_edges:
-                        continue
-                    seen_edges.add(edge)
-                    triples.append(f"({root}) -[CO_MENTIONED]- ({target})")
-                    connected.add(target)
+        projection = document_graph.traverse([clean_entity_name], identity.tenant_id,
+                                             identity.user_id, traversal_depth)
+        relations = projection.rows
+        triples = [f"({row['root']}) -[CO_MENTIONED]- ({row['target']})" for row in relations]
+        connected = {row["target"] for row in relations}
     except Exception as error:
         logger.error(
             "Knowledge graph query failed: %s",
@@ -795,4 +749,5 @@ def graph_query(
         "connected_entities": sorted(connected),
         "relation_types": ["CO_MENTIONED"] if triples else [],
         "graph_triples": triples,
+        "projection_status": projection.status,
     }
