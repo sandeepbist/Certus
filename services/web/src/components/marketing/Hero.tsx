@@ -7,18 +7,18 @@ export function Hero() {
       {/* Pill badge */}
       <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs font-mono mb-6">
         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-        Certus v1.0 • Verifiable Intelligence & Continuous Intent Assurance
+        Certus • Workspace knowledge and tools
       </div>
 
       {/* Main Headline */}
       <h1 className="text-3xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-white max-w-3xl leading-tight mb-4">
-        Grounded Intelligence. <br />
-        <span className="text-zinc-400">Verifiable Autonomous Action.</span>
+        Ask your documents. <br />
+        <span className="text-zinc-400">Inspect the evidence.</span>
       </h1>
 
       {/* Subheading */}
       <p className="text-sm sm:text-base text-zinc-400 max-w-xl font-normal leading-relaxed mb-8">
-        Certus connects your enterprise knowledge, extracts multi-hop entity graphs, enforces deterministic intent contracts before agent tool execution, and verifies postcondition business states.
+        Ask questions about your workspace documents, narrow retrieval by scope, and use supported tools. Review answer evidence as you work.
       </p>
 
       {/* CTA Buttons */}
@@ -42,53 +42,53 @@ export function Hero() {
       <div className="flex flex-wrap items-center justify-center gap-6 text-xs text-zinc-400 mb-12 font-medium">
         <div className="flex items-center gap-1.5">
           <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Grounded Hybrid Retrieval (Zero Hallucinations)</span>
+          <span>Scoped document retrieval</span>
         </div>
         <div className="flex items-center gap-1.5">
           <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Deterministic Pre-Action Gate</span>
+          <span>Inspectable answer evidence</span>
         </div>
         <div className="flex items-center gap-1.5">
           <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Durable Temporal Workflows</span>
+          <span>Durable workflow retries</span>
         </div>
       </div>
 
       {/* Architecture Matrix */}
       <div className="w-full rounded-xl bg-zinc-950 border border-zinc-800/80 p-4 text-left">
         <div className="flex items-center justify-between pb-3 border-b border-zinc-850 mb-3 text-xs font-mono">
-          <span className="text-zinc-400">Certus Core Operating Pillars</span>
-          <span className="text-emerald-500 font-mono">ACTIVE</span>
+          <span className="text-zinc-400">Inside Certus</span>
+          <span className="text-emerald-500 font-mono">CAPABILITIES</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800">
             <div className="flex items-center gap-2 text-zinc-200 mb-1.5">
               <Database className="w-3.5 h-3.5 text-zinc-400" />
-              <span className="font-semibold text-xs">Grounded Knowledge Base</span>
+              <span className="font-semibold text-xs">Hybrid retrieval</span>
             </div>
             <p className="text-zinc-400 text-[11px] leading-relaxed">
-              pgvector HNSW cosine search fused with BM25 keyword matching and Neo4j multi-hop entity graphs.
+              Combines pgvector similarity with PostgreSQL full-text search using reciprocal rank fusion.
             </p>
           </div>
 
           <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800">
             <div className="flex items-center gap-2 text-zinc-200 mb-1.5">
               <Shield className="w-3.5 h-3.5 text-zinc-400" />
-              <span className="font-semibold text-xs">Intent Action Contracts</span>
+              <span className="font-semibold text-xs">Evidence checks</span>
             </div>
             <p className="text-zinc-400 text-[11px] leading-relaxed">
-              Compile decisions into versioned contracts; enforce deterministic policy checks before any tool dispatch.
+              Checks claim structure and evidence references so you can review the sources behind an answer.
             </p>
           </div>
 
           <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800">
             <div className="flex items-center gap-2 text-zinc-200 mb-1.5">
               <Zap className="w-3.5 h-3.5 text-zinc-400" />
-              <span className="font-semibold text-xs">Durable Execution & Replay</span>
+              <span className="font-semibold text-xs">Workflows and replay</span>
             </div>
             <p className="text-zinc-400 text-[11px] leading-relaxed">
-              Temporal state persistence, MCP tool integration, and time-travel trace replay when policies evolve.
+              Temporal workflows retry and record outcomes. Replay generates a new answer from frozen evidence.
             </p>
           </div>
         </div>

@@ -4,39 +4,39 @@ export function FeatureGrid() {
   const features = [
     {
       icon: Brain,
-      title: 'Hybrid RAG',
-      desc: 'Combines HNSW dense vector similarity, tsvector full-text keyword indexing, and reciprocal rank fusion (RRF) with cross-encoder re-ranking.',
-      tag: 'Dense + Sparse',
+      title: 'Hybrid retrieval',
+      desc: 'Combines pgvector similarity and PostgreSQL full-text search with reciprocal rank fusion to retrieve document context.',
+      tag: 'Vector + full-text',
     },
     {
       icon: Bot,
-      title: 'Multi-Agent Orchestration',
-      desc: 'LangGraph-powered cyclic agent loop: Planner decomposes tasks, Researcher retrieves context, Executor synthesizes answers, and Critic validates grounding.',
-      tag: 'LangGraph StateGraph',
+      title: 'Agent pipeline',
+      desc: 'A fixed LangGraph pipeline retrieves context, invokes supported MCP tools, generates answers, and checks claim and evidence structure.',
+      tag: 'LangGraph pipeline',
     },
     {
       icon: Network,
-      title: 'GraphRAG Knowledge Graph',
-      desc: 'Neo4j graph database captures extracted entities (people, technologies, concepts) and their relationships for multi-hop reasoning.',
+      title: 'Knowledge graph',
+      desc: 'Uses heuristic entity extraction and document co-mentions to build a Neo4j graph. Traversal follows related nodes within set limits.',
       tag: 'Neo4j + Cypher',
     },
     {
       icon: Shield,
-      title: 'Continuous Intent Assurance',
-      desc: 'Enforces deterministic policy gates before agent actions and generates immutable outcome receipts to verify business state.',
-      tag: 'Action Contracts',
+      title: 'Evidence checks',
+      desc: 'Checks claim structure and evidence references for consistency. Review the sources to judge whether an answer is correct.',
+      tag: 'Claim + evidence',
     },
     {
       icon: Zap,
-      title: 'Durable Workflows',
-      desc: 'Temporal engine integration ensures scheduled automations and event-driven pipelines survive server restarts with automatic compensations.',
+      title: 'Durable workflows',
+      desc: 'Temporal workflows use retries and record execution outcomes.',
       tag: 'Temporal.io',
     },
     {
       icon: Sparkles,
-      title: 'Persistent Memory Store',
-      desc: 'Short-term buffer for conversation session history and long-term semantic fact store with background consolidation and entity reflection.',
-      tag: 'Memory Store',
+      title: 'Persistent memory',
+      desc: 'Stores facts within a selected scope. Run similarity analysis on demand to compare stored memories.',
+      tag: 'Scoped facts',
     },
   ];
 
@@ -44,10 +44,10 @@ export function FeatureGrid() {
     <section id="features" className="py-20 px-6 md:px-12 max-w-5xl mx-auto">
       <div className="text-center max-w-2xl mx-auto mb-12">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-2">
-          Engineered for Intelligence & Reliability
+          Work with your documents and tools
         </h2>
         <p className="text-zinc-400 text-xs sm:text-sm leading-relaxed">
-          Every layer of Certus is designed to eliminate hallucination, guarantee auditability, and ensure intent compliance.
+          Retrieve document context, inspect answer evidence, run durable workflows, and keep scoped facts for later use.
         </p>
       </div>
 
