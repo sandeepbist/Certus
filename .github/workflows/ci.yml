@@ -18,6 +18,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
+      mailpit:
+        image: axllent/mailpit:v1.29.0@sha256:0f93f36075f5f6fe428655d94299dda59b9a533d3fe9ce62909a72ac6fe455a9
+        env:
+          MP_SMTP_DISABLE_RDNS: "true"
+        ports:
+          - '1025'
+          - '8025'
       neo4j:
         image: neo4j:5-community@sha256:89d577f2e49606de76441eca8cf7a0fe88e594cbaac4d2a3d86c6e59676e2b1e
         env:
@@ -106,7 +113,15 @@ jobs:
       - name: Verify authentication against the migrated database
         env:
           CERTUS_TEST_DATABASE_URL: postgresql://certus_runtime:certus-ci-runtime-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
-        run: bun run scripts/check-auth-database.ts
+          AUTH_MAIL_MODE: smtp
+          AUTH_MAIL_FROM: auth@certus.example
+          SMTP_HOST: 127.0.0.1
+          SMTP_PORT: ${{ job.services.mailpit.ports['1025'] }}
+          SMTP_SECURITY: plain
+          CERTUS_TEST_MAILPIT_URL: http://127.0.0.1:${{ job.services.mailpit.ports['8025'] }}
+        run: |
+          bun run scripts/check-auth-database.ts
+          bun run scripts/check-auth-email.ts
 
       - name: Run repository gate
         env:

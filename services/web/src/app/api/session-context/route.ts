@@ -13,6 +13,10 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  if (!session.user.emailVerified) {
+    return NextResponse.json({ error: 'EmailNotVerified' }, { status: 403 });
+  }
+
   const tenantId = session.session.activeOrganizationId;
   if (!tenantId) {
     return NextResponse.json(

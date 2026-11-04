@@ -281,3 +281,62 @@ Bug reports, focused fixes, tests, and documentation improvements are welcome. R
 ## License
 
 Certus is available under the [MIT License](LICENSE).
+
+### Authentication email
+
+Email verification is required before password sign-in or workspace creation.
+Signup opens the verification page. After opening the email link, sign in to
+continue to onboarding or your existing workspace. Verification does not create
+a session, so replaying a verification link cannot sign someone in or bypass 2FA.
+Verification links expire after 24 hours. Password reset links expire after
+1 hour, are consumed once, and revoke existing sessions after a reset.
+
+For a local inbox, run a disposable SMTP sink, for example:
+
+```sh
+docker run --rm --name certus-mail -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 axllent/mailpit:v1.29.0 --smtp-disable-rdns
+```
+
+Set `AUTH_MAIL_MODE=smtp`, `AUTH_MAIL_FROM=auth@certus.example`,
+`SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025`, and `SMTP_SECURITY=plain` in `.env`.
+Open the local inbox at `http://localhost:8025`. Stop this container when finished.
+The sink holds private links. Do not share its contents or publish its ports.
+
+The default development mode is `AUTH_MAIL_MODE=disabled`. Signup, resend, and
+recovery return an email-unavailable error. They never print private links.
+Existing verified users can still sign in. Existing unverified users, including
+users from earlier local versions, must verify using a configured mail service.
+Existing unverified sessions and API keys cannot access workspace pages or the gateway.
+No migration silently marks existing email addresses as verified.
+
+Production requires `AUTH_MAIL_MODE=smtp`, a sender email, `SMTP_HOST`,
+`SMTP_PORT`, and `SMTP_SECURITY=starttls` or `tls`. Set both `SMTP_USER` and
+`SMTP_PASSWORD` when authentication is required. Certificate validation stays
+on. Startup rejects invalid configuration. Production readiness also probes
+SMTP connectivity. Development readiness probes SMTP when smtp mode is configured and reports disabled mode explicitly. Configure any reverse proxy to redact auth URLs, reset URLs,
+and query strings from access logs. Trust forwarded client IPs only from that
+proxy; auth request limits are per process and use Better Auth's existing IP policy.
+
+Mail requests probe the service before checking accounts. Disabled or unreachable
+mail returns the same unavailable error for known and unknown accounts. Public
+responses to eligible, unknown, and recipient-rejected requests remain generic
+to resist account enumeration. The UI confirms only that delivery was requested,
+never SMTP acceptance or inbox delivery. Recipient-specific failures emit a fixed
+operational error without addresses, tokens, credentials, or provider details.
+No automatic retry runs. Users may retry, subject to rate limits. SMTP connect,
+greeting, DNS, and idle waits are bounded to 3, 3, 3, and 5 seconds respectively.
+A successful SMTP submission still does not prove external inbox delivery.
+
+With a disposable migrated database and Mailpit, rerun the behavior proof:
+
+```sh
+CERTUS_TEST_DATABASE_URL=postgresql://... \
+AUTH_MAIL_MODE=smtp AUTH_MAIL_FROM=auth@certus.example \
+SMTP_HOST=127.0.0.1 SMTP_PORT=1025 SMTP_SECURITY=plain \
+CERTUS_TEST_MAILPIT_URL=http://127.0.0.1:8025 \
+bun run scripts/check-auth-email.ts
+```
+
+The check drives real Better Auth HTTP handlers, reads actual sink messages,
+uses their links, and removes only its own accounts, reset rows, and messages.
+It must never target a shared or production database or inbox.

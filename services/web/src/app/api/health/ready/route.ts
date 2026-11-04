@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { getAuth } from '@/lib/auth';
+import { createAuthMail } from '@/lib/auth-mail';
 import { getDb } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -8,9 +9,11 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     getAuth();
+    const mail = createAuthMail();
+    if (mail.mode === 'smtp') await mail.assertAvailable();
     await getDb().query('SELECT 1 AS ready');
     return NextResponse.json(
-      { status: 'ready', service: 'web' },
+      { status: 'ready', service: 'web', authEmail: mail.mode },
       { headers: { 'Cache-Control': 'no-store' } },
     );
   } catch {

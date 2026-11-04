@@ -47,6 +47,9 @@ export async function POST(request: Request) {
             attribution.scopes,
             member.role
      FROM certus_api_keys AS attribution
+     JOIN "user" AS creator
+       ON creator.id = attribution.created_by
+      AND creator."emailVerified" = true
      JOIN member
        ON member."organizationId" = attribution.tenant_id
       AND member."userId" = attribution.created_by

@@ -1,3 +1,4 @@
+import { createAuthMail } from './lib/auth-mail';
 import { assertWebDatabaseConfiguration, closeDbPool } from './lib/db';
 import { safeErrorFields } from './lib/safe-errors';
 
@@ -6,6 +7,7 @@ const globalForShutdown = globalThis as typeof globalThis & {
 };
 
 assertWebDatabaseConfiguration();
+createAuthMail();
 
 if (!globalForShutdown.certusWebShutdownRegistered) {
   globalForShutdown.certusWebShutdownRegistered = true;

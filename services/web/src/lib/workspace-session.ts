@@ -16,6 +16,10 @@ export async function requireWorkspaceSession(requestHeaders: Headers) {
     throw new WorkspaceSessionError(401, 'Unauthorized', 'A valid Certus session is required.');
   }
 
+  if (!session.user.emailVerified) {
+    throw new WorkspaceSessionError(403, 'EmailNotVerified', 'Verify your email before accessing a workspace.');
+  }
+
   const tenantId = session.session.activeOrganizationId;
   if (!tenantId) {
     throw new WorkspaceSessionError(403, 'WorkspaceRequired', 'Select or create a workspace first.');

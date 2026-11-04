@@ -4,7 +4,6 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { signUp } from '@/lib/auth-client';
-import { createWorkspace } from '@/lib/workspace-client';
 import { Lock, Mail, User, ArrowRight, AlertCircle } from 'lucide-react';
 import { OAuthButtons } from './OAuthButtons';
 
@@ -47,19 +46,14 @@ export function SignUpForm({ providers }: { providers: Array<'google' | 'github'
         email,
         password,
         name,
+        callbackURL: '/verify-email?verified=1',
       });
 
       if (response?.error) {
         setError(response.error.message || 'Could not complete registration.');
       } else {
-        try {
-          await createWorkspace(`${name.trim()}'s Workspace`);
-          router.push('/dashboard');
-          router.refresh();
-        } catch {
-          router.push('/onboarding');
-          router.refresh();
-        }
+        router.push('/verify-email');
+        router.refresh();
       }
     } catch {
       setError('Could not reach the authentication service. Please try again.');
@@ -76,7 +70,7 @@ export function SignUpForm({ providers }: { providers: Array<'google' | 'github'
       </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-zinc-900 border border-red-900/50 flex items-center gap-2 text-red-400 text-xs">
+        <div role="alert" className="mb-4 p-3 rounded-lg bg-zinc-900 border border-red-900/50 flex items-center gap-2 text-red-400 text-xs">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -85,10 +79,11 @@ export function SignUpForm({ providers }: { providers: Array<'google' | 'github'
       <form onSubmit={handleSubmit} className="space-y-3">
         {/* Full Name */}
         <div>
-          <label className="block text-xs text-zinc-300 mb-1">Full Name</label>
+          <label htmlFor="signup-name" className="block text-xs text-zinc-300 mb-1">Full Name</label>
           <div className="relative">
             <User className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="signup-name"
               type="text"
               required
               placeholder="Alex Vance"
@@ -101,10 +96,11 @@ export function SignUpForm({ providers }: { providers: Array<'google' | 'github'
 
         {/* Email */}
         <div>
-          <label className="block text-xs text-zinc-300 mb-1">Email</label>
+          <label htmlFor="signup-email" className="block text-xs text-zinc-300 mb-1">Email</label>
           <div className="relative">
             <Mail className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="signup-email"
               type="email"
               required
               placeholder="name@company.com"
@@ -117,10 +113,11 @@ export function SignUpForm({ providers }: { providers: Array<'google' | 'github'
 
         {/* Password */}
         <div>
-          <label className="block text-xs text-zinc-300 mb-1">Password</label>
+          <label htmlFor="signup-password" className="block text-xs text-zinc-300 mb-1">Password</label>
           <div className="relative">
             <Lock className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="signup-password"
               type="password"
               required
               minLength={10}
@@ -135,10 +132,11 @@ export function SignUpForm({ providers }: { providers: Array<'google' | 'github'
 
         {/* Confirm Password */}
         <div>
-          <label className="block text-xs text-zinc-300 mb-1">Confirm Password</label>
+          <label htmlFor="signup-confirm-password" className="block text-xs text-zinc-300 mb-1">Confirm Password</label>
           <div className="relative">
             <Lock className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="signup-confirm-password"
               type="password"
               required
               minLength={10}

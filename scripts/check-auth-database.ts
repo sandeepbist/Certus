@@ -44,7 +44,11 @@ try {
     headers: headers(), returnHeaders: true,
   });
   userId = signedUp.response.user.id;
-  rememberCookies(signedUp.headers);
+  assert.equal(signedUp.response.token, null);
+  assert.equal(await auth.api.getSession({ headers: headers() }), null);
+  await getDb().query('UPDATE "user" SET "emailVerified" = true WHERE id = $1', [userId]);
+  const legacySignIn = await auth.api.signInEmail({ body: { email, password }, headers: headers(), returnHeaders: true });
+  rememberCookies(legacySignIn.headers);
   assert.equal((await auth.api.getSession({ headers: headers() }))?.user.id, userId);
   const account = await getDb().query('SELECT issuer FROM "account" WHERE "userId" = $1', [userId]);
   assert.equal(account.rows[0].issuer, null);
@@ -95,6 +99,18 @@ try {
       assert.equal(remaining.rowCount, 0);
     }
     if (organizationId) await getDb().query('DELETE FROM "organization" WHERE id = $1', [organizationId]);
+    const sinkUrl = process.env.CERTUS_TEST_MAILPIT_URL;
+    if (sinkUrl && ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(sinkUrl).hostname)) {
+      const response = await fetch(`${sinkUrl}/api/v1/search?query=${encodeURIComponent(`to:${email}`)}`);
+      const data: { messages: { ID: string }[] } = await response.json();
+      for (const message of data.messages) {
+        const removed = await fetch(`${sinkUrl}/api/v1/messages`, {
+          method: 'DELETE', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ IDs: [message.ID] }),
+        });
+        assert.equal(removed.ok, true);
+      }
+    }
     if (userId) await getDb().query('DELETE FROM "user" WHERE id = $1', [userId]);
   } finally {
     await closeDbPool();
