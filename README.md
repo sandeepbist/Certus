@@ -170,6 +170,8 @@ Open [http://localhost:3000](http://localhost:3000), create an account, and crea
 
 Local PostgreSQL migrations use `POSTGRES_USER` and `POSTGRES_PASSWORD`. Application services use the separate `CERTUS_RUNTIME_DB_USER` and `CERTUS_RUNTIME_DB_PASSWORD` role through `DATABASE_URL`. The sample `nexus_dev_password` is for isolated local development only. Compose requires explicit migration and runtime passwords plus a runtime URL. Its workflow worker waits until PostgreSQL confirms the runtime role grants and password login. Role separation limits database privileges; application tenant authorization remains responsible for tenant isolation.
 
+Apply migration `072_auth_account_provider_identity.sql` before starting the updated web service. It preserves historical account issuers, allows the nullable issuer field required by Better Auth 1.7.3 and later, and enforces unique provider/account identities. Duplicate identities stop the migration for explicit resolution; it never merges users. Coordinate the web upgrade with draining older auth instances. See the [upstream account migration guide](https://github.com/better-auth/better-auth/blob/v1.7.15/docs/content/docs/guides/1-7-upgrade-guide.mdx#account-identity-keeps-the-provider-key).
+
 Provider keys are optional:
 
 ```dotenv

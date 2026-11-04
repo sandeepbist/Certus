@@ -57,13 +57,13 @@ describe('container build contracts', () => {
     const webPackage = readRepositoryFile('services/web/package.json');
     const lock = readRepositoryFile('bun.lock');
 
-    expect(webPackage).toContain('"next": "15.5.27"');
+    expect(webPackage).toContain('"next": "15.5.28"');
     expect(rootPackage).toContain('"postcss": "8.5.26"');
     expect(rootPackage).toContain('"sharp": "0.35.5"');
-    expect(lock).toContain('"next@15.5.27"');
+    expect(lock).toContain('"next@15.5.28"');
     expect(lock).toContain('"postcss@8.5.26"');
     expect(lock).toContain('"sharp@0.35.5"');
-    expect(lock).not.toContain('"next@15.5.23"');
+    expect(lock).not.toContain('"next@15.5.27"');
     expect(lock).not.toContain('"postcss@8.4.31"');
     expect(lock).not.toContain('"sharp@0.34.5"');
   });
@@ -203,6 +203,9 @@ describe('container build contracts', () => {
     for (const service of ['embedding', 'ingestion', 'mcp-tools', 'orchestration', 'workflows']) {
       const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
 
+      expect(dockerfile).toContain(
+        'FROM python:3.12.16-slim@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07',
+      );
       expect(dockerfile).toContain(`services/${service}/requirements.lock`);
       expect(dockerfile).toContain('--require-hashes');
       expect(dockerfile).toContain('--only-binary=:all:');

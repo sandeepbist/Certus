@@ -103,6 +103,11 @@ jobs:
           bash scripts/migrate-db.sh
           bash scripts/migrate-db.sh
 
+      - name: Verify authentication against the migrated database
+        env:
+          CERTUS_TEST_DATABASE_URL: postgresql://certus_runtime:certus-ci-runtime-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
+        run: bun run scripts/check-auth-database.ts
+
       - name: Run repository gate
         env:
           CERTUS_TEST_DATABASE_URL: postgresql://certus_runtime:certus-ci-runtime-password@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/certus_ci
