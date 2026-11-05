@@ -12,11 +12,14 @@ for (const operation of ['preflight', 'send'] as const) {
     let settled = false;
     let unavailable = false;
     let messageReceived = false;
+    let start = 0;
+    let settledMs = Infinity;
+    let closedMs = Infinity;
     const server = net.createServer(socket => {
       peers.add(socket);
       socket.setEncoding('utf8');
       socket.on('error', () => {});
-      socket.on('close', () => { peers.delete(socket); closed = true; });
+      socket.on('close', () => { peers.delete(socket); closed = true; closedMs = performance.now() - start; });
       socket.write('220 deadline-fixture ESMTP\r\n');
       let buffer = '';
       let data = false;
@@ -61,18 +64,20 @@ for (const operation of ['preflight', 'send'] as const) {
         SMTP_USER: '', SMTP_PASSWORD: '',
       });
       const mail = createAuthMail();
-      const start = performance.now();
+      start = performance.now();
       pending = (operation === 'preflight' ? mail.assertAvailable() : mail.send({
         email: 'fixture@example.invalid', url: 'http://localhost/private-fixture', kind: 'verification',
       })).catch(error => { unavailable = error.status === 'SERVICE_UNAVAILABLE'; })
-        .finally(() => { settled = true; });
+        .finally(() => { settled = true; settledMs = performance.now() - start; });
       await new Promise<void>(resolve => { observation = setTimeout(resolve, 11_500); });
       // Observe before cleanup: destroying the peer must never make this check pass.
       expect({ settled, closed, sockets: peers.size }).toEqual({ settled: true, closed: true, sockets: 0 });
       expect(dripCount).toBeGreaterThanOrEqual(2);
       expect(unavailable).toBe(operation === 'preflight');
       expect(messageReceived).toBe(operation === 'send');
-      expect(performance.now() - start).toBeLessThan(12_500);
+      expect(settledMs).toBeLessThan(11_000);
+      expect(closedMs).toBeLessThan(11_000);
+      console.info('SMTP deadline proof:', JSON.stringify({ operation, settledMs, closedMs, dripCount, sockets: peers.size }));
     } finally {
       clearTimeout(observation);
       for (const timer of drips) clearInterval(timer);

@@ -325,7 +325,18 @@ never SMTP acceptance or inbox delivery. Recipient-specific failures emit a fixe
 operational error without addresses, tokens, credentials, or provider details.
 No automatic retry runs. Users may retry, subject to rate limits. SMTP connect,
 greeting, DNS, and idle waits are bounded to 3, 3, 3, and 5 seconds respectively.
+Each preflight and each submission also has a ten-second total deadline, including
+connection setup, TLS, authentication, and SMTP replies. Expiry cancels that
+operation's socket, even if the server keeps sending incomplete replies. Successful
+and failed operations also release their sockets and timers. Nodemailer's public
+`getSocket` hook supplies an owned TCP socket while Nodemailer retains certificate
+validation, TLS upgrades, authentication, and message handling. A request that runs
+both preflight and submission can spend up to twenty seconds in SMTP work.
 A successful SMTP submission still does not prove external inbox delivery.
+
+Run the paced-reply cancellation regression with
+`bun test tests/unit/authMailDeadline.test.ts`. It checks preflight and submission
+settlement and peer closure before fixture cleanup.
 
 With a disposable migrated database and Mailpit, rerun the behavior proof:
 
