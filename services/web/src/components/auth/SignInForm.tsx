@@ -29,9 +29,13 @@ export function SignInForm({ providers }: { providers: Array<'google' | 'github'
       });
 
       if (response?.error) {
+        if (response.error.code === 'EMAIL_NOT_VERIFIED') {
+          router.push('/verify-email');
+          return;
+        }
         setError(response.error.message || 'Invalid email or password.');
       } else {
-        router.push('/dashboard');
+        router.push('/onboarding');
         router.refresh();
       }
     } catch {
@@ -49,7 +53,7 @@ export function SignInForm({ providers }: { providers: Array<'google' | 'github'
       </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-zinc-900 border border-red-900/50 flex items-center gap-2 text-red-400 text-xs">
+        <div role="alert" className="mb-4 p-3 rounded-lg bg-zinc-900 border border-red-900/50 flex items-center gap-2 text-red-400 text-xs">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -58,10 +62,11 @@ export function SignInForm({ providers }: { providers: Array<'google' | 'github'
       <form onSubmit={handleSubmit} className="space-y-3.5">
         {/* Email Field */}
         <div>
-          <label className="block text-xs text-zinc-300 mb-1">Email</label>
+          <label htmlFor="signin-email" className="block text-xs text-zinc-300 mb-1">Email</label>
           <div className="relative">
             <Mail className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="signin-email"
               type="email"
               required
               placeholder="name@company.com"
@@ -75,7 +80,7 @@ export function SignInForm({ providers }: { providers: Array<'google' | 'github'
         {/* Password Field */}
         <div>
           <div className="flex items-center justify-between mb-1">
-            <label className="block text-xs text-zinc-300">Password</label>
+            <label htmlFor="signin-password" className="block text-xs text-zinc-300">Password</label>
             <Link
               href="/forgot-password"
               className="text-[11px] text-zinc-400 hover:text-white transition-colors"
@@ -86,6 +91,7 @@ export function SignInForm({ providers }: { providers: Array<'google' | 'github'
           <div className="relative">
             <Lock className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="signin-password"
               type={showPassword ? 'text' : 'password'}
               required
               placeholder="••••••••"
@@ -95,6 +101,7 @@ export function SignInForm({ providers }: { providers: Array<'google' | 'github'
             />
             <button
               type="button"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
               onClick={() => setShowPassword(!showPassword)}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
             >

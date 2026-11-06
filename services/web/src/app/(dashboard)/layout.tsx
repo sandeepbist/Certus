@@ -17,6 +17,10 @@ export default async function DashboardLayout({
     redirect('/sign-in');
   }
 
+  if (!session.user.emailVerified) {
+    redirect('/verify-email');
+  }
+
   if (!session.session.activeOrganizationId) {
     redirect('/onboarding');
   }

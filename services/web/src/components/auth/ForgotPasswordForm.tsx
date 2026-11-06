@@ -39,10 +39,10 @@ export function ForgotPasswordForm() {
         <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-emerald-400 mx-auto mb-4">
           <CheckCircle2 className="w-5 h-5" />
         </div>
-        <h1 className="text-lg font-semibold text-white tracking-tight mb-1">Check Your Inbox</h1>
+        <h1 className="text-lg font-semibold text-white tracking-tight mb-1">Recovery Request Submitted</h1>
         <p className="text-zinc-400 text-xs mb-6">
           If an account exists for <span className="text-white font-medium">{email}</span>, recovery
-          instructions are ready. Local development writes the reset URL to the web server terminal.
+          email delivery was requested. This does not confirm delivery. If no email arrives, retry later or contact the operator.
         </p>
         <Link
           href="/sign-in"
@@ -64,7 +64,7 @@ export function ForgotPasswordForm() {
       </div>
 
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-zinc-900 border border-red-900/50 flex items-center gap-2 text-red-400 text-xs">
+        <div role="alert" className="mb-4 p-3 rounded-lg bg-zinc-900 border border-red-900/50 flex items-center gap-2 text-red-400 text-xs">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -72,10 +72,11 @@ export function ForgotPasswordForm() {
 
       <form onSubmit={handleSubmit} className="space-y-3.5">
         <div>
-          <label className="block text-xs text-zinc-300 mb-1">Email</label>
+          <label htmlFor="recovery-email" className="block text-xs text-zinc-300 mb-1">Email</label>
           <div className="relative">
             <Mail className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
+              id="recovery-email"
               type="email"
               required
               placeholder="you@example.com"

@@ -12,6 +12,10 @@ export default async function OnboardingPage() {
     redirect('/sign-in');
   }
 
+  if (!session.user.emailVerified) {
+    redirect('/verify-email');
+  }
+
   if (session.session.activeOrganizationId) {
     redirect('/dashboard');
   }

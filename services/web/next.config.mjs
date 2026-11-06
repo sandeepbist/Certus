@@ -22,6 +22,7 @@ const developmentGatewayWebSocketUrl = `${gatewayUrl.replace(/^http/, 'ws')}/ws`
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  logging: { incomingRequests: { ignore: [/\/api\/auth\//, /\/(verify-email|reset-password)/] } },
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../../'),
   env: {
@@ -32,6 +33,15 @@ const nextConfig = {
   // The repository-level ESLint command is the authoritative lint gate.
   eslint: {
     ignoreDuringBuilds: true,
+  },
+  async headers() {
+    return ['/api/auth/:path*', '/verify-email', '/reset-password'].map(source => ({
+      source,
+      headers: [
+        { key: 'Referrer-Policy', value: 'no-referrer' },
+        { key: 'Cache-Control', value: 'no-store' },
+      ],
+    }));
   },
   async rewrites() {
     return [

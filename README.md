@@ -281,3 +281,107 @@ Bug reports, focused fixes, tests, and documentation improvements are welcome. R
 ## License
 
 Certus is available under the [MIT License](LICENSE).
+
+### Authentication email
+
+Email verification is required before password sign-in or workspace creation.
+Signup opens the verification page. After opening the email link, sign in to
+continue to onboarding or your existing workspace. Verification does not create
+a session, so replaying a verification link cannot sign someone in or bypass 2FA.
+Verification links expire after 24 hours. Password reset links expire after
+1 hour, are consumed once, and revoke existing sessions after a reset.
+
+For a local inbox, run a disposable SMTP sink, for example:
+
+```sh
+docker run --rm --name certus-mail -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 axllent/mailpit:v1.29.0 --smtp-disable-rdns
+```
+
+Set `AUTH_MAIL_MODE=smtp`, `AUTH_MAIL_FROM=auth@certus.example`,
+`SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025`, and `SMTP_SECURITY=plain` in `.env`.
+Open the local inbox at `http://localhost:8025`. Stop this container when finished.
+The sink holds private links. Do not share its contents or publish its ports.
+
+The default development mode is `AUTH_MAIL_MODE=disabled`. Signup, resend, and
+recovery return an email-unavailable error. They never print private links.
+Existing verified users can still sign in. Existing unverified users, including
+users from earlier local versions, must verify using a configured mail service.
+Existing unverified sessions and API keys cannot access workspace pages or the gateway.
+No migration silently marks existing email addresses as verified.
+
+Production requires `AUTH_MAIL_MODE=smtp`, a sender email, `SMTP_HOST`,
+`SMTP_PORT`, and `SMTP_SECURITY=starttls` or `tls`. Set both `SMTP_USER` and
+`SMTP_PASSWORD` when authentication is required. Certificate validation stays
+on. Startup rejects invalid configuration. Production readiness also probes
+SMTP connectivity. Development readiness probes SMTP when smtp mode is configured and reports disabled mode explicitly. Configure any reverse proxy to redact auth URLs, reset URLs,
+and query strings from access logs. Trust forwarded client IPs only from that
+proxy; auth request limits are per process and use Better Auth's existing IP policy.
+
+Mail requests probe the service before checking accounts. Disabled or unreachable
+mail returns the same unavailable error for known and unknown accounts. Public
+responses to eligible, unknown, and recipient-rejected requests remain generic
+to resist account enumeration. The UI confirms only that delivery was requested,
+never SMTP acceptance or inbox delivery. Recipient-specific failures emit a fixed
+operational error without addresses, tokens, credentials, or provider details.
+No automatic retry runs. Users may retry, subject to rate limits. SMTP connect,
+greeting, DNS, and idle waits are bounded to 3, 3, 3, and 5 seconds respectively.
+Each preflight and each submission also has a ten-second total deadline, including
+connection setup, TLS, authentication, and SMTP replies. Expiry cancels that
+operation's socket, even if the server keeps sending incomplete replies. Successful
+and failed operations also release their sockets and timers. Nodemailer's public
+`getSocket` hook supplies an owned TCP socket while Nodemailer retains certificate
+validation, TLS upgrades, authentication, and message handling. Public requests await
+only the recipient-independent preflight and durable database admission. Recipient
+SMTP submission runs in the worker, outside the response and signup transaction.
+A successful SMTP submission still does not prove external inbox delivery.
+
+Apply migration `073_auth_mail_outbox.sql` before starting web instances. The Node
+instrumentation starts one tracked serial worker per process. PostgreSQL row locks
+prevent concurrent instances from claiming the same job. Known and unknown mail
+requests use the same admission transaction, including encrypted no-op jobs for
+unknown accounts. Queue or storage admission failure returns a generic 503. The
+existing 500 ms response floor and rate limits remain in place. Callback URLs are
+limited to 2,048 characters for every account class.
+
+The private outbox stores at most 1,000 rows with payloads of at most 32 KiB.
+AES-256-GCM encrypts addresses and private links with a key derived from
+`BETTER_AUTH_SECRET`. Keep that secret stable while pending jobs exist. A secret
+rotation makes old jobs unreadable. There is no queue read API. The worker uses
+the existing auth database role and does not run in the tenant workflow workers.
+
+Pending work survives process reloads and restarts. The worker attempts each job
+once, within 15 minutes of admission. The original link expiry still applies from
+issuance. It deletes successful jobs and no-op jobs. Rejected, timed-out, or
+interrupted attempts remain `uncertain`, with payloads erased. Pending jobs that
+expire also lose their payloads. After a crash, a `sending` job becomes uncertain
+once its start time is 60 seconds old. Terminal rows expire after 24 hours. During
+a relay outage, terminal rows can fill the bounded queue and fail admission closed.
+
+Shutdown stops new claims and attempts to drain the active operation before the
+pool closes. Next's standalone signal handler can exit before this drain finishes.
+Pending jobs remain durable. An interrupted attempt follows the uncertain policy.
+SMTP can accept a message before a connection fails, so automatic retry could
+send duplicates. Users can explicitly resend, subject to the existing rate limits.
+The UI confirms only a request, including when a later delivery attempt fails.
+
+Run the paced-reply cancellation regression with
+`bun test tests/unit/authMailDeadline.test.ts`. It checks preflight and submission
+settlement and peer closure before fixture cleanup.
+
+With a disposable migrated database and Mailpit, rerun the behavior proof:
+
+```sh
+CERTUS_TEST_DATABASE_URL=postgresql://... \
+AUTH_MAIL_MODE=smtp AUTH_MAIL_FROM=auth@certus.example \
+SMTP_HOST=127.0.0.1 SMTP_PORT=1025 SMTP_SECURITY=plain \
+CERTUS_TEST_MAILPIT_URL=http://127.0.0.1:8025 \
+bun run scripts/check-auth-email.ts
+```
+
+With the same disposable database and SMTP environment, also run
+`bun run scripts/check-auth-mail-outbox.ts`. It checks encrypted storage, bounded
+admission, paced-response timing, expiry, interruption, and worker restart.
+
+The check drives real Better Auth HTTP handlers, reads actual sink messages,
+uses their links, and removes only its own accounts, reset rows, and messages.
+It must never target a shared or production database or inbox.
