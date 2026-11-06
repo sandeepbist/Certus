@@ -204,7 +204,7 @@ describe('container build contracts', () => {
       const dockerfile = readRepositoryFile(`services/${service}/Dockerfile`);
 
       expect(dockerfile).toContain(
-        'FROM python:3.12.16-slim@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07',
+        'FROM python:3.12.16-slim@sha256:e695ab189fa2d082b1c61c69a6b888a5adeca61ceeccad107b1ed2a125721a9e',
       );
       expect(dockerfile).toContain(`services/${service}/requirements.lock`);
       expect(dockerfile).toContain('--require-hashes');
