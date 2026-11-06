@@ -1,6 +1,8 @@
 import { betterAuth } from 'better-auth';
-import { APIError, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
-import { createAuthMail } from './auth-mail';
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
+import { createAuthMail, type AuthMailMessage } from './auth-mail';
+import { defineRequestState } from '@better-auth/core/context';
+import { enqueueAuthMail } from './auth-mail-outbox';
 import { safeErrorFields } from './safe-errors';
 import { organization, twoFactor } from 'better-auth/plugins';
 import { passkey } from '@better-auth/passkey';
@@ -23,7 +25,10 @@ function createAuth() {
   const githubClientSecret = process.env.GITHUB_CLIENT_SECRET?.trim();
   const mail = createAuthMail();
   const db = getDb();
-  const mailRequestStarted = new WeakMap<Request, number>();
+  const mailRequest = defineRequestState(() => ({ started: 0, requested: false, messages: new Array<AuthMailMessage>() }));
+  async function schedule(message: AuthMailMessage) {
+    (await mailRequest.get()).messages.push(message);
+  }
 
   return betterAuth({
     appName: 'Certus',
@@ -42,7 +47,7 @@ function createAuth() {
       maxPasswordLength: 128,
       autoSignIn: false,
       resetPasswordTokenExpiresIn: 60 * 60,
-      sendResetPassword: ({ user, url }) => mail.send({ email: user.email, url, kind: 'reset' }),
+      sendResetPassword: ({ user, url }) => schedule({ email: user.email, url, kind: 'reset' }),
       revokeSessionsOnPasswordReset: true,
     },
     emailVerification: {
@@ -50,7 +55,7 @@ function createAuth() {
       sendOnSignIn: false,
       autoSignInAfterVerification: false,
       expiresIn: 24 * 60 * 60,
-      sendVerificationEmail: ({ user, url }) => mail.send({ email: user.email, url, kind: 'verification' }),
+      sendVerificationEmail: ({ user, url }) => schedule({ email: user.email, url, kind: 'verification' }),
     },
     rateLimit: {
       enabled: true,
@@ -68,14 +73,22 @@ function createAuth() {
           });
         }
         if (['/sign-up/email', '/send-verification-email', '/request-password-reset'].includes(ctx.path)) {
-          if (ctx.request) mailRequestStarted.set(ctx.request, Date.now());
+          for (const target of [ctx.body?.callbackURL, ctx.body?.redirectTo]) {
+            if (typeof target === 'string' && target.length > 2048) throw new APIError('BAD_REQUEST', {
+              code: 'INVALID_CALLBACK_URL', message: 'Callback URL is too long.',
+            });
+          }
+          await mailRequest.set({ started: Date.now(), requested: true, messages: [] });
           await mail.assertAvailable();
         }
       }),
       after: createAuthMiddleware(async (ctx) => {
-        const started = ctx.request && mailRequestStarted.get(ctx.request);
-        if (started !== undefined) {
-          const remaining = 500 - (Date.now() - started);
+        const state = await mailRequest.get();
+        if ((state.requested || state.messages.length) && !isAPIError(ctx.context.returned)) {
+          await enqueueAuthMail(state.messages);
+        }
+        if (state.requested) {
+          const remaining = 500 - (Date.now() - state.started);
           if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
         }
       }),

@@ -158,7 +158,7 @@ describe('container build contracts', () => {
     const readiness = readRepositoryFile('services/web/src/app/api/health/ready/route.ts');
 
     expect(readiness).toContain("export const dynamic = 'force-dynamic'");
-    expect(readiness).toContain("getDb().query('SELECT 1 AS ready')");
+    expect(readiness).toContain("getDb().query('SELECT id FROM auth_mail_outbox LIMIT 0')");
     expect(readiness).toContain('{ status: 503');
     expect(readiness).not.toContain('error.message');
   });

@@ -1,3 +1,4 @@
+import { startAuthMailWorker, stopAuthMailWorker } from '../services/web/src/lib/auth-mail-outbox';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 
@@ -19,6 +20,15 @@ Object.assign(process.env, {
 const { getAuth } = await import('../services/web/src/lib/auth');
 const { getDb, closeDbPool } = await import('../services/web/src/lib/db');
 const auth = getAuth();
+assert.equal((await getDb().query('SELECT id FROM auth_mail_outbox')).rowCount, 0, 'Use an empty disposable auth mail queue');
+await startAuthMailWorker();
+async function drainMail() {
+  const deadline = Date.now() + 30_000;
+  while ((await getDb().query("SELECT id FROM auth_mail_outbox WHERE status IN ('pending', 'sending')")).rowCount) {
+    assert.ok(Date.now() < deadline, 'Disposable auth mail work drains before fixture cleanup');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
 const fixtureId = randomUUID();
 const email = `auth-check-${fixtureId}@example.invalid`;
 const password = 'certus-disposable-auth-check-password';
@@ -93,6 +103,8 @@ try {
   assert.equal(retained.rows[0].issuer, 'legacy-issuer');
 } finally {
   try {
+    await drainMail();
+    await stopAuthMailWorker();
     if (keyId) {
       await getDb().query('DELETE FROM apikey WHERE id = $1', [keyId]);
       const remaining = await getDb().query('SELECT id FROM apikey WHERE id = $1', [keyId]);
@@ -113,7 +125,7 @@ try {
     }
     if (userId) await getDb().query('DELETE FROM "user" WHERE id = $1', [userId]);
   } finally {
-    await closeDbPool();
+    await stopAuthMailWorker(); await closeDbPool();
   }
 }
 console.log('Auth database check passed: signup, legacy signin, identity uniqueness, sessions, workspace hook, API key, password rejection, and fixture cleanup.');

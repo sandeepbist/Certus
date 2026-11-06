@@ -53,7 +53,7 @@ for (const operation of ['preflight', 'send'] as const) {
       });
     });
     let observation: ReturnType<typeof setTimeout> | undefined;
-    let pending: Promise<void> | undefined;
+    let pending: Promise<unknown> | undefined;
     try {
       await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
       const address = server.address();

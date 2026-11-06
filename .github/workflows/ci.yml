@@ -122,6 +122,7 @@ jobs:
         run: |
           bun run scripts/check-auth-database.ts
           bun run scripts/check-auth-email.ts
+          bun run scripts/check-auth-mail-outbox.ts
 
       - name: Run repository gate
         env:

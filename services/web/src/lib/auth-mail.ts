@@ -4,6 +4,8 @@ import { connect } from 'node:net';
 import { APIError } from 'better-auth/api';
 import { safeErrorFields } from './safe-errors';
 
+export type AuthMailMessage = { email: string; url: string; kind: 'verification' | 'reset' };
+
 export function createAuthMail() {
   const production = process.env.NODE_ENV === 'production';
   const mode = process.env.AUTH_MAIL_MODE?.trim() || (production ? 'smtp' : 'disabled');
@@ -77,18 +79,20 @@ export function createAuthMail() {
     async assertAvailable() {
       try { await withTransport(transport => transport.verify()); } catch { throw unavailable(); }
     },
-    async send({ email, url, kind }: { email: string; url: string; kind: 'verification' | 'reset' }) {
+    async send({ email, url, kind }: AuthMailMessage) {
       const verification = kind === 'verification';
       try {
         const result = await withTransport(transport => transport.sendMail({
           from, to: email,
           subject: verification ? 'Verify your Certus email' : 'Reset your Certus password',
-          text: `${verification ? 'Verify your email' : 'Reset your password'} using this private link:\n\n${url}\n\nThis link expires in ${verification ? '24 hours' : '1 hour'}. If you did not request it, ignore this email.`,
+          text: `${verification ? 'Verify your email' : 'Reset your password'} using this private link:\n\n${url}\n\nThis link expires ${verification ? '24 hours' : '1 hour'} after it was requested. If you did not request it, ignore this email.`,
         }));
         if (!result.accepted.includes(email)) throw unavailable();
+        return true;
       } catch (error) {
-        // Better Auth exposes callback failures only for existing accounts.
+        // Delivery outcomes remain private; public endpoints only confirm a durable request.
         console.error('Certus auth email delivery failed.', safeErrorFields(error, 'auth email delivery'));
+        return false;
       }
     },
   };

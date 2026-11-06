@@ -11,7 +11,7 @@ export async function GET() {
     getAuth();
     const mail = createAuthMail();
     if (mail.mode === 'smtp') await mail.assertAvailable();
-    await getDb().query('SELECT 1 AS ready');
+    await getDb().query('SELECT id FROM auth_mail_outbox LIMIT 0');
     return NextResponse.json(
       { status: 'ready', service: 'web', authEmail: mail.mode },
       { headers: { 'Cache-Control': 'no-store' } },

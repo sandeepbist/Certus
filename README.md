@@ -330,9 +330,39 @@ connection setup, TLS, authentication, and SMTP replies. Expiry cancels that
 operation's socket, even if the server keeps sending incomplete replies. Successful
 and failed operations also release their sockets and timers. Nodemailer's public
 `getSocket` hook supplies an owned TCP socket while Nodemailer retains certificate
-validation, TLS upgrades, authentication, and message handling. A request that runs
-both preflight and submission can spend up to twenty seconds in SMTP work.
+validation, TLS upgrades, authentication, and message handling. Public requests await
+only the recipient-independent preflight and durable database admission. Recipient
+SMTP submission runs in the worker, outside the response and signup transaction.
 A successful SMTP submission still does not prove external inbox delivery.
+
+Apply migration `073_auth_mail_outbox.sql` before starting web instances. The Node
+instrumentation starts one tracked serial worker per process. PostgreSQL row locks
+prevent concurrent instances from claiming the same job. Known and unknown mail
+requests use the same admission transaction, including encrypted no-op jobs for
+unknown accounts. Queue or storage admission failure returns a generic 503. The
+existing 500 ms response floor and rate limits remain in place. Callback URLs are
+limited to 2,048 characters for every account class.
+
+The private outbox stores at most 1,000 rows with payloads of at most 32 KiB.
+AES-256-GCM encrypts addresses and private links with a key derived from
+`BETTER_AUTH_SECRET`. Keep that secret stable while pending jobs exist. A secret
+rotation makes old jobs unreadable. There is no queue read API. The worker uses
+the existing auth database role and does not run in the tenant workflow workers.
+
+Pending work survives process reloads and restarts. The worker attempts each job
+once, within 15 minutes of admission. The original link expiry still applies from
+issuance. It deletes successful jobs and no-op jobs. Rejected, timed-out, or
+interrupted attempts remain `uncertain`, with payloads erased. Pending jobs that
+expire also lose their payloads. After a crash, a `sending` job becomes uncertain
+once its start time is 60 seconds old. Terminal rows expire after 24 hours. During
+a relay outage, terminal rows can fill the bounded queue and fail admission closed.
+
+Shutdown stops new claims and attempts to drain the active operation before the
+pool closes. Next's standalone signal handler can exit before this drain finishes.
+Pending jobs remain durable. An interrupted attempt follows the uncertain policy.
+SMTP can accept a message before a connection fails, so automatic retry could
+send duplicates. Users can explicitly resend, subject to the existing rate limits.
+The UI confirms only a request, including when a later delivery attempt fails.
 
 Run the paced-reply cancellation regression with
 `bun test tests/unit/authMailDeadline.test.ts`. It checks preflight and submission
@@ -347,6 +377,10 @@ SMTP_HOST=127.0.0.1 SMTP_PORT=1025 SMTP_SECURITY=plain \
 CERTUS_TEST_MAILPIT_URL=http://127.0.0.1:8025 \
 bun run scripts/check-auth-email.ts
 ```
+
+With the same disposable database and SMTP environment, also run
+`bun run scripts/check-auth-mail-outbox.ts`. It checks encrypted storage, bounded
+admission, paced-response timing, expiry, interruption, and worker restart.
 
 The check drives real Better Auth HTTP handlers, reads actual sink messages,
 uses their links, and removes only its own accounts, reset rows, and messages.

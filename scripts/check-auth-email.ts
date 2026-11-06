@@ -1,3 +1,4 @@
+import { startAuthMailWorker, stopAuthMailWorker } from '../services/web/src/lib/auth-mail-outbox';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createEmailVerificationToken } from 'better-auth/api';
@@ -23,6 +24,15 @@ if (failureMode === '--offline') process.env.SMTP_PORT = '1';
 const { getAuth } = await import('../services/web/src/lib/auth');
 const { getDb, closeDbPool } = await import('../services/web/src/lib/db');
 const auth = getAuth();
+if (!failureMode) assert.equal((await getDb().query('SELECT id FROM auth_mail_outbox')).rowCount, 0, 'Use an empty disposable auth mail queue');
+if (!failureMode) await startAuthMailWorker();
+async function drainMail() {
+  const deadline = Date.now() + 30_000;
+  while ((await getDb().query("SELECT id FROM auth_mail_outbox WHERE status IN ('pending', 'sending')")).rowCount) {
+    assert.ok(Date.now() < deadline, 'Disposable auth mail work drains before fixture cleanup');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
 if (failureMode === '--disabled' || failureMode === '--offline') {
   try {
     for (const email of [process.env.CERTUS_EMAIL_CHECK_ACCOUNT, 'unknown@example.invalid']) {
@@ -43,7 +53,7 @@ if (failureMode === '--disabled' || failureMode === '--offline') {
       assert.equal(signin.status, 200, 'Verified local users can sign in when email is unavailable');
     }
     console.log('Unavailable endpoint proof passed.');
-  } finally { await closeDbPool(); }
+  } finally { await stopAuthMailWorker(); await closeDbPool(); }
   process.exit(0);
 }
 const id = randomUUID();
@@ -72,7 +82,12 @@ async function inbox() {
   return data.messages;
 }
 async function deliveredLink(kind: 'verification' | 'reset') {
-  const received = await inbox();
+  const deadline = Date.now() + 15_000;
+  let received = await inbox();
+  while (!received.length && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    received = await inbox();
+  }
   for (const message of received) {
     messages.add(message.ID);
     const response = await fetch(`${sinkUrl}/api/v1/message/${message.ID}`);
@@ -83,6 +98,7 @@ async function deliveredLink(kind: 'verification' | 'reset') {
   assert.fail('Expected a real SMTP message in the disposable sink.');
 }
 async function removeMessages() {
+  await drainMail();
   for (const { ID } of await inbox()) messages.add(ID);
   for (const ID of messages) {
     const response = await fetch(`${sinkUrl}/api/v1/messages`, {
@@ -236,6 +252,6 @@ try {
       assert.equal((await getDb().query('SELECT id FROM "user" WHERE id = $1', [userId])).rowCount, 0);
     }
   } finally {
-    await closeDbPool();
+    await stopAuthMailWorker(); await closeDbPool();
   }
 }
